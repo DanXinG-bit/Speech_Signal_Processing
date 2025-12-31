@@ -71,7 +71,7 @@ def endpoint_detection(energy, zcr):
     noise_energy = np.mean(energy[:10])
     noise_zcr = np.mean(zcr[:10])
     
-    ITU = noise_energy * 5.0   # 高能量门限
+    ITU = noise_energy * 10.0   # 高能量门限
     ITL = noise_energy * 2.2   # 低能量门限
     IZCT = noise_zcr * 3.0     # 过零率门限
     
@@ -92,6 +92,8 @@ def endpoint_detection(energy, zcr):
 
 def main():
     #选择文件
+    
+
     audio_file = "F0004CA0B1A502.wav" 
     
     try:
