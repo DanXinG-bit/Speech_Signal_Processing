@@ -69,7 +69,7 @@ def endpoint_detection(energy, zcr):
     noise_energy = np.mean(energy[:10])
     noise_zcr = np.mean(zcr[:10])
     
-    ITU = noise_energy * 5.0   # 高能量门限
+    ITU = noise_energy * 10.0   # 高能量门限
     ITL = noise_energy * 2.2   # 低能量门限
     IZCT = noise_zcr * 3.0     # 过零率门限
     
@@ -90,8 +90,40 @@ def endpoint_detection(energy, zcr):
 
 def main():
     #选择文件
-    audio_file = "F0004CA0B1A502.wav" 
+    audio_files = [
+        "F0004CA0B1A502.wav",
+        "F0005CA0B1A499.wav", 
+        "F0008CA0B1B1007.wav"
+    ]
     
+    # 显示文件选择菜单
+    print("请选择要处理的音频文件：")
+    print("1. F0004CA0B1A502.wav")
+    print("2. F0005CA0B1A499.wav")
+    print("3. F0008CA0B1B1007.wav")
+    
+    # 获取用户选择
+    while True:
+        try:
+            choice = input("请输入选择 (1/2/3): ").strip()
+            
+            if choice not in ['1', '2', '3']:
+                print("输入无效，请输入 1、2 或 3")
+                continue
+                
+            # 将选择转换为列表索引
+            choice_index = int(choice) - 1
+            audio_file = audio_files[choice_index]
+            print(f"您选择了: {audio_file}")
+            break
+            
+        except ValueError:
+            print("请输入有效的数字")
+        except KeyboardInterrupt:
+            print("\n程序已中断")
+            return
+    
+    # 后续处理代码
     try:
         fs, data = load_wav_with_wave(audio_file)
         print(f"成功读取文件: {audio_file} | 采样率: {fs}")
