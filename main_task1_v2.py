@@ -1,6 +1,9 @@
 import wave
 import numpy as np
 import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import filedialog
+import os
 
 # ==========================================
 # 第一部分：自研算法工具库 (底层实现)
@@ -91,113 +94,91 @@ def endpoint_detection(energy, zcr):
     return segments, [ITU, ITL, IZCT]
 
 def main():
-    #选择文件
-    audio_files = [
-        "F0004CA0B1A502.wav",
-        "F0005CA0B1A499.wav", 
-        "F0008CA0B1B1007.wav"
-    ]
+    # ==========================================
+    # 窗口化文件选择逻辑 [追加要求实现]
+    # ==========================================
+    # 创建一个隐藏的 Tkinter 根窗口
+    root = tk.Tk()
+    root.withdraw() 
+
+    # 获取当前 py 文件所在的目录，作为弹窗的默认打开位置 [1, 3]
+    current_dir = os.getcwd()
     
-    # 显示文件选择菜单
-    print("请选择要处理的音频文件：")
-    print("1. F0004CA0B1A502.wav")
-    print("2. F0005CA0B1A499.wav")
-    print("3. F0008CA0B1B1007.wav")
+    print("正在等待用户选择音频文件...")
     
-    # 获取用户选择
-    while True:
-        try:
-            choice = input("请输入选择 (1/2/3): ").strip()
-            
-            if choice not in ['1', '2', '3']:
-                print("输入无效，请输入 1、2 或 3")
-                continue
-                
-            # 将选择转换为列表索引
-            choice_index = int(choice) - 1
-            audio_file = audio_files[choice_index]
-            print(f"您选择了: {audio_file}")
-            break
-            
-        except ValueError:
-            print("请输入有效的数字")
-        except KeyboardInterrupt:
-            print("\n程序已中断")
-            return
-    
-    # 后续处理代码
-    try:
-        fs, data = load_wav_with_wave(audio_file)
-        print(f"成功读取文件: {audio_file} | 采样率: {fs}")
-    except Exception as e:
-        print(f"读取失败: {e}。请检查文件名及路径是否正确。")
+    # 弹出系统标准文件选择对话框
+    # filetypes 限制只能选择 wav 文件，避免读取错误 [2]
+    audio_file = filedialog.askopenfilename(
+        initialdir=current_dir, 
+        title="请选择一个语音文件 (需包含静音段)",
+        filetypes=(("WAV files", "*.wav"), ("All files", "*.*"))
+    )
+
+    # 检查用户是否取消了选择
+    if not audio_file:
+        print("未选择任何文件，程序即将退出。")
         return
 
-    #1.预处理与特征提取 (25ms帧长, 10ms帧移) [1]
+    # ==========================================
+    # 后续任务处理逻辑 [任务 1]
+    # ==========================================
+    try:
+        # 使用自研 load_wav_with_wave 函数读取数据 [2, 4]
+        fs, data = load_wav_with_wave(audio_file)
+        file_name = os.path.basename(audio_file)
+        print(f"成功读取文件: {file_name} | 采样率: {fs}")
+    except Exception as e:
+        print(f"读取失败: {e}。请确保文件是标准的 PCM 格式 WAV 文件。")
+        return
+
+    # 1. 预处理与特征提取 (典型值：25ms 帧长, 10ms 帧移) [5]
     frame_len = int(0.025 * fs)
     frame_shift = int(0.01 * fs)
     frames = enframe(data, frame_len, frame_shift)
     
     energy = calc_short_time_energy(frames)
     zcr = calc_short_time_zcr(frames)
-    
-    #2.执行双门限检测 [7]
+
+    # 2. 执行双门限检测算法 [6]
     segments, thresholds = endpoint_detection(energy, zcr)
     itu, itl, izct = thresholds
-    
-    # 输出检测结果
-    print(f"检测到 {len(segments)} 个语音段:")
+
+    # 输出检测结果分析 [7]
+    print(f"检测完成！在 {len(data)/fs:.2f}s 信号中发现 {len(segments)} 个语音段:")
     for i, (start, end) in enumerate(segments):
-        print(f"  段{i+1}: 起始帧 {start}, 结束帧 {end} (时长: {(end-start)*frame_shift/fs:.3f}秒)")
+        # 将帧索引代换回采样点索引，并换算为时间 [8]
+        duration = (end - start) * frame_shift / fs
+        print(f"  语音段 {i+1}: 起始点 {start*frame_shift}, 结束点 {end*frame_shift} (时长: {duration:.3f}秒)")
+
+    # 3. 绘图展示 (Matplotlib) [2, 9]
+    plt.figure(figsize=(10, 8))
     
-    #3.绘图展示 (Matplotlib) [5, 6]
-    plt.figure(figsize=(12, 10))
-    
-    #图1: 原始波形与检测端点(红线开始, 绿线结束)
+    # 子图 1: 原始波形与红绿标注线
     plt.subplot(3, 1, 1)
-    plt.plot(data, color='silver', label='Speech Waveform')
-    
-    # 添加起始和结束线，并只设置一次图例标签
-    added_start_label = False
-    added_end_label = False
-    
-    for start, end in segments:
-        if not added_start_label:
-            plt.axvline(x=start * frame_shift, color='red', linestyle='--', label='Start Point')
-            added_start_label = True
-        else:
-            plt.axvline(x=start * frame_shift, color='red', linestyle='--')
-        
-        if not added_end_label:
-            plt.axvline(x=end * frame_shift, color='green', linestyle='--', label='End Point')
-            added_end_label = True
-        else:
-            plt.axvline(x=end * frame_shift, color='green', linestyle='--')
-    
-    plt.title("Task 1: Endpoint Detection Result")
-    plt.xlabel("Sample Index")
+    plt.plot(data, color='silver', alpha=0.8)
+    for i, (start, end) in enumerate(segments):
+        # 红色虚线表示开始点，绿色虚线表示结束点
+        plt.axvline(x=start * frame_shift, color='red', linestyle='--')
+        plt.axvline(x=end * frame_shift, color='green', linestyle='--')
+    plt.title(f"Speech Waveform & Detected Endpoints ({file_name})")
     plt.ylabel("Amplitude")
-    plt.legend()
-    
-    #图2: 短时能量与双门限
+
+    # 子图 2: 短时能量与 ITU/ITL 门限 [6]
     plt.subplot(3, 1, 2)
-    plt.plot(energy, color='blue')
+    plt.plot(energy, color='blue', label='Short-time Energy')
     plt.axhline(y=itu, color='red', linestyle=':', label=f'ITU={itu:.2e}')
     plt.axhline(y=itl, color='orange', linestyle=':', label=f'ITL={itl:.2e}')
-    plt.title("Short-time Energy (with ITL/ITU)")
-    plt.xlabel("Frame Index")
     plt.ylabel("Energy")
-    plt.legend()
-    
-    #图3: 短时过零率与门限
+    plt.legend(loc='upper right')
+
+    # 子图 3: 短时过零率与 IZCT 门限 [6]
     plt.subplot(3, 1, 3)
-    plt.plot(zcr, color='darkcyan')
+    plt.plot(zcr, color='darkcyan', label='ZCR')
     plt.axhline(y=izct, color='magenta', linestyle=':', label=f'IZCT={izct:.1f}')
-    plt.title("Short-time Zero Crossing Rate (with IZCT)")
-    plt.xlabel("Frame Index")
     plt.ylabel("Zero Crossing Rate")
-    plt.legend()
-    
+    plt.xlabel("Frame Index")
+    plt.legend(loc='upper right')
+
     plt.tight_layout()
     plt.show()
 
