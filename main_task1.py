@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 # ==========================================
 
 def get_hamming_window(window_len):
-    #手动实现汉明窗公式: w(n) = 0.54 - 0.46 * cos(2*pi*n / (N-1)) [1]
+    #手动实现汉明窗,公式: w(n) = 0.54 - 0.46 * cos(2*pi*n / (N-1)) [1]
     n = np.arange(window_len)
     window = 0.54 - 0.46 * np.cos(2 * np.pi * n / (window_len - 1))
     return window
@@ -20,12 +20,10 @@ def enframe(signal, frame_len, frame_shift):
     # 补零以确保完整分帧
     pad_len = (num_frames - 1) * frame_shift + frame_len
     padded_signal = np.concatenate((signal, np.zeros(pad_len - signal_len)))
-    
     # 构造帧矩阵
     indices = np.tile(np.arange(0, frame_len), (num_frames, 1)) + \
               np.tile(np.arange(0, num_frames * frame_shift, frame_shift), (frame_len, 1)).T
     frames = padded_signal[indices.astype(np.int32)]
-    
     # 应用汉明窗
     window = get_hamming_window(frame_len)
     return frames * window
