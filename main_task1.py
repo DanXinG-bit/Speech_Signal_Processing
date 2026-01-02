@@ -1,13 +1,16 @@
 import wave
 import numpy as np
 import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import filedialog
+import os
 
 # ==========================================
 # 第一部分：自研算法工具库 (底层实现)
 # ==========================================
 
 def get_hamming_window(window_len):
-    #手动实现汉明窗,公式: w(n) = 0.54 - 0.46 * cos(2*pi*n / (N-1)) [1]
+    #手动实现汉明窗公式: w(n) = 0.54 - 0.46 * cos(2*pi*n / (N-1)) [1]
     n = np.arange(window_len)
     window = 0.54 - 0.46 * np.cos(2 * np.pi * n / (window_len - 1))
     return window
@@ -20,10 +23,12 @@ def enframe(signal, frame_len, frame_shift):
     # 补零以确保完整分帧
     pad_len = (num_frames - 1) * frame_shift + frame_len
     padded_signal = np.concatenate((signal, np.zeros(pad_len - signal_len)))
+    
     # 构造帧矩阵
     indices = np.tile(np.arange(0, frame_len), (num_frames, 1)) + \
               np.tile(np.arange(0, num_frames * frame_shift, frame_shift), (frame_len, 1)).T
     frames = padded_signal[indices.astype(np.int32)]
+    
     # 应用汉明窗
     window = get_hamming_window(frame_len)
     return frames * window
@@ -69,9 +74,9 @@ def endpoint_detection(energy, zcr):
     noise_energy = np.mean(energy[:10])
     noise_zcr = np.mean(zcr[:10])
     
-    ITU = noise_energy * 10.0   # 高能量门限
-    ITL = noise_energy * 2.2   # 低能量门限
-    IZCT = noise_zcr * 3.0     # 过零率门限
+    ITU = noise_energy * 12.0   # 高能量门限
+    ITL = noise_energy * 6.0   # 低能量门限
+    IZCT = noise_zcr * 4.5     # 过零率门限
     
     segments = []
     in_voiced = False
@@ -89,57 +94,91 @@ def endpoint_detection(energy, zcr):
     return segments, [ITU, ITL, IZCT]
 
 def main():
-    #选择文件
-    
+    # ==========================================
+    # 窗口化文件选择逻辑 [追加要求实现]
+    # ==========================================
+    # 创建一个隐藏的 Tkinter 根窗口
+    root = tk.Tk()
+    root.withdraw() 
 
-    audio_file = "F0004CA0B1A502.wav" 
+    # 获取当前 py 文件所在的目录，作为弹窗的默认打开位置 [1, 3]
+    current_dir = os.getcwd()
     
-    try:
-        fs, data = load_wav_with_wave(audio_file)
-        print(f"成功读取文件: {audio_file} | 采样率: {fs}")
-    except Exception as e:
-        print(f"读取失败: {e}。请检查文件名及路径是否正确。")
+    print("正在等待用户选择音频文件...")
+    
+    # 弹出系统标准文件选择对话框
+    # filetypes 限制只能选择 wav 文件，避免读取错误 [2]
+    audio_file = filedialog.askopenfilename(
+        initialdir=current_dir, 
+        title="请选择一个语音文件 (需包含静音段)",
+        filetypes=(("WAV files", "*.wav"), ("All files", "*.*"))
+    )
+
+    # 检查用户是否取消了选择
+    if not audio_file:
+        print("未选择任何文件，程序即将退出。")
         return
 
-    #1.预处理与特征提取 (25ms帧长, 10ms帧移) [1]
+    # ==========================================
+    # 后续任务处理逻辑 [任务 1]
+    # ==========================================
+    try:
+        # 使用自研 load_wav_with_wave 函数读取数据 [2, 4]
+        fs, data = load_wav_with_wave(audio_file)
+        file_name = os.path.basename(audio_file)
+        print(f"成功读取文件: {file_name} | 采样率: {fs}")
+    except Exception as e:
+        print(f"读取失败: {e}。请确保文件是标准的 PCM 格式 WAV 文件。")
+        return
+
+    # 1. 预处理与特征提取 (典型值：25ms 帧长, 10ms 帧移) [5]
     frame_len = int(0.025 * fs)
     frame_shift = int(0.01 * fs)
     frames = enframe(data, frame_len, frame_shift)
     
     energy = calc_short_time_energy(frames)
     zcr = calc_short_time_zcr(frames)
-    
-    #2.执行双门限检测 [7]
+
+    # 2. 执行双门限检测算法 [6]
     segments, thresholds = endpoint_detection(energy, zcr)
     itu, itl, izct = thresholds
+
+    # 输出检测结果分析 [7]
+    print(f"检测完成！在 {len(data)/fs:.2f}s 信号中发现 {len(segments)} 个语音段:")
+    for i, (start, end) in enumerate(segments):
+        # 将帧索引代换回采样点索引，并换算为时间 [8]
+        duration = (end - start) * frame_shift / fs
+        print(f"  语音段 {i+1}: 起始点 {start*frame_shift}, 结束点 {end*frame_shift} (时长: {duration:.3f}秒)")
+
+    # 3. 绘图展示 (Matplotlib) [2, 9]
+    plt.figure(figsize=(10, 8))
     
-    #3.绘图展示 (Matplotlib) [5, 6]
-    plt.figure(figsize=(12, 10))
-    
-    #图1: 原始波形与检测端点(红线开始, 绿线结束)
+    # 子图 1: 原始波形与红绿标注线
     plt.subplot(3, 1, 1)
-    plt.plot(data, color='silver', label='Speech Waveform')
-    for start, end in segments:
-        plt.axvline(x=start * frame_shift, color='red', linestyle='--', label='Start' if start == segments else "")
-        plt.axvline(x=end * frame_shift, color='green', linestyle='--', label='End' if end == segments[5] else "")
-    plt.title("Task 1: Endpoint Detection Result")
-    plt.legend()
-    
-    #图2: 短时能量与双门限
+    plt.plot(data, color='silver', alpha=0.8)
+    for i, (start, end) in enumerate(segments):
+        # 红色虚线表示开始点，绿色虚线表示结束点
+        plt.axvline(x=start * frame_shift, color='red', linestyle='--')
+        plt.axvline(x=end * frame_shift, color='green', linestyle='--')
+    plt.title(f"Speech Waveform & Detected Endpoints ({file_name})")
+    plt.ylabel("Amplitude")
+
+    # 子图 2: 短时能量与 ITU/ITL 门限 [6]
     plt.subplot(3, 1, 2)
-    plt.plot(energy, color='blue')
+    plt.plot(energy, color='blue', label='Short-time Energy')
     plt.axhline(y=itu, color='red', linestyle=':', label=f'ITU={itu:.2e}')
     plt.axhline(y=itl, color='orange', linestyle=':', label=f'ITL={itl:.2e}')
-    plt.title("Short-time Energy (with ITL/ITU)")
-    plt.legend()
-    
-    #图3: 短时过零率与门限
+    plt.ylabel("Energy")
+    plt.legend(loc='upper right')
+
+    # 子图 3: 短时过零率与 IZCT 门限 [6]
     plt.subplot(3, 1, 3)
-    plt.plot(zcr, color='darkcyan')
+    plt.plot(zcr, color='darkcyan', label='ZCR')
     plt.axhline(y=izct, color='magenta', linestyle=':', label=f'IZCT={izct:.1f}')
-    plt.title("Short-time Zero Crossing Rate (with IZCT)")
-    plt.legend()
-    
+    plt.ylabel("Zero Crossing Rate")
+    plt.xlabel("Frame Index")
+    plt.legend(loc='upper right')
+
     plt.tight_layout()
     plt.show()
 
