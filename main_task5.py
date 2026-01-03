@@ -7,420 +7,393 @@ from tkinter import filedialog
 import time
 
 # ==========================================
-# 第一部分：自研算法工具库 (底层实现，符合规范)
+# 第一部分：优化算法库 (使用numpy向量化)
 # ==========================================
 
 def load_wav(filename):
-    """读取标准 PCM WAV 文件并归一化 [2]"""
+    """读取WAV文件 (向量化版本)"""
     try:
         with wave.open(filename, 'rb') as wf:
             fs = wf.getparams().framerate
             n_channels = wf.getparams().nchannels
-            n_frames = wf.getparams().nframes
-            
-            # 读取数据
-            str_data = wf.readframes(n_frames)
+            str_data = wf.readframes(wf.getparams().nframes)
             wave_data = np.frombuffer(str_data, dtype=np.int16)
             
-            # 如果是多通道，取第一个通道
+            # 多通道处理
             if n_channels > 1:
-                wave_data = wave_data[::n_channels]
-                print(f"  警告: {filename} 是多通道音频，将使用第一个通道")
+                wave_data = wave_data.reshape(-1, n_channels)[:, 0]  # 取第一通道
             
-            # 转换为浮点数并归一化到 [-1, 1]
-            wave_data = wave_data.astype(np.float32) / 32768.0
-            return fs, wave_data
+            return fs, wave_data.astype(np.float32) / 32768.0
     except Exception as e:
-        print(f"  加载 {filename} 失败: {e}")
+        print(f"  加载失败: {e}")
         return None, None
 
-def durbin_step(data, p=12):
-    """手动实现 Durbin 算法求解 AR 系数 [1]"""
-    N = len(data)
+def durbin_step_optimized(frame, p=12):
+    """优化版Durbin算法 (使用numpy向量化)"""
+    N = len(frame)
     if N < p + 1:
         return None
     
-    # 1. 计算自相关 R(0)...R(p) - 手动实现
+    # 1. 向量化计算自相关 R(0)...R(p)
     R = np.zeros(p + 1)
     for k in range(p + 1):
-        sum_val = 0.0
-        for i in range(N - k):
-            sum_val += data[i] * data[i + k]
-        R[k] = sum_val
+        R[k] = np.sum(frame[:N-k] * frame[k:])
     
-    # 2. 检查 R[0] 是否太小（防止除以零）
-    if R[0] < 1e-10:
+    # 能量检查
+    if R[0] < 1e-12:
         return None
     
-    # 3. Durbin 递归算法
+    # 2. 向量化Durbin算法
     E = np.zeros(p + 1)
     E[0] = R[0]
     a = np.zeros((p + 1, p + 1))
     
     for i in range(1, p + 1):
-        # 计算反射系数 ki
-        sum_prev = 0.0
-        for j in range(1, i):
-            sum_prev += a[i-1, j] * R[i-j]
+        # 向量化计算反射系数
+        if i == 1:
+            ki = R[1] / R[0]
+        else:
+            # 使用向量点积计算
+            ki = (R[i] - np.dot(a[i-1, 1:i], R[i-1:0:-1])) / E[i-1]
         
-        ki = (R[i] - sum_prev) / (E[i-1] + 1e-12)  # 防止除以零
-        
-        # 稳定性截断 [1]
-        if ki >= 0.999:
-            ki = 0.999
-        elif ki <= -0.999:
-            ki = -0.999
-        
+        # 稳定性截断
+        ki = np.clip(ki, -0.999, 0.999)
         a[i, i] = ki
         
-        # 更新其他系数
-        for j in range(1, i):
-            a[i, j] = a[i-1, j] - ki * a[i-1, i-j]
+        # 向量化更新系数
+        if i > 1:
+            a[i, 1:i] = a[i-1, 1:i] - ki * a[i-1, i-1:0:-1]
         
-        # 更新误差能量
         E[i] = (1.0 - ki * ki) * E[i-1]
     
-    # 返回第 p 阶的 AR 系数
     return a[p, 1:p+1]
 
-def ar_to_reflection(ar_coeffs):
-    """由 AR 系数递推求反射系数 ki [1]"""
+def ar_to_reflection_optimized(ar_coeffs):
+    """优化版AR到反射系数转换 (向量化)"""
     if ar_coeffs is None or len(ar_coeffs) == 0:
         return None
     
     p = len(ar_coeffs)
     a = np.zeros((p + 1, p + 1))
-    a[p, 1:p+1] = ar_coeffs
-    
+    a[p, 1:] = ar_coeffs
     k = np.zeros(p)
     
-    # 反向递推求反射系数
+    # 反向递推
     for i in range(p, 0, -1):
-        ki = a[i, i]
-        
-        # 稳定性截断
-        if ki >= 0.999:
-            ki = 0.999
-        elif ki <= -0.999:
-            ki = -0.999
-        
+        ki = np.clip(a[i, i], -0.999, 0.999)
         k[i-1] = ki
         
         if i > 1:
             denom = 1.0 - ki * ki
-            if abs(denom) < 1e-12:
+            if denom < 1e-12:
                 denom = 1e-12
             
-            # 更新低阶系数
-            for j in range(1, i):
-                a[i-1, j] = (a[i, j] + ki * a[i, i-j]) / denom
+            # 向量化更新
+            a[i-1, 1:i] = (a[i, 1:i] + ki * a[i, i-1:0:-1]) / denom
     
     return k
 
 # ==========================================
-# 第二部分：优化版矢量量化 (LBG 算法)
+# 第二部分：高效矢量量化 (向量化LBG)
 # ==========================================
 
-def lbg_train_optimized(features, cb_size=16, max_iterations=10):
-    """优化版 LBG 分裂聚类算法 [1]"""
+def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
+    """向量化LBG算法 (性能优化版)"""
     if len(features) == 0:
-        print("错误: 特征数据为空，无法训练")
         return np.array([])
     
-    n_features = len(features)
-    feature_dim = features.shape[1]
+    n_samples, n_dims = features.shape
+    print(f"  LBG训练: {n_samples}个样本, {n_dims}维, 目标码本: {cb_size}")
     
-    print(f"  LBG训练: {n_features} 个特征, 维度 {feature_dim}, 目标码本大小 {cb_size}")
+    # 1. 初始码本：全局均值
+    codebook = np.mean(features, axis=0, keepdims=True)
     
-    # 1. 初始码本：全局形心
-    codebook = np.zeros((1, feature_dim))
-    
-    # 手动计算全局均值
-    for d in range(feature_dim):
-        sum_val = 0.0
-        for i in range(n_features):
-            sum_val += features[i, d]
-        codebook[0, d] = sum_val / n_features
-    
-    # 2. 分裂过程
-    split_iteration = 0
+    # 2. 分裂训练
     while codebook.shape[0] < cb_size:
-        split_iteration += 1
-        old_size = codebook.shape[0]
+        # 分裂：添加扰动
+        epsilon = 0.01
+        codebook = np.vstack([
+            codebook * (1 + epsilon),
+            codebook * (1 - epsilon)
+        ])
         
-        # 分裂当前码本
-        new_codebook = np.zeros((old_size * 2, feature_dim))
-        epsilon = 0.01  # 分裂扰动因子
-        
-        for i in range(old_size):
-            for d in range(feature_dim):
-                new_codebook[2*i, d] = codebook[i, d] * (1.0 + epsilon)
-                new_codebook[2*i + 1, d] = codebook[i, d] * (1.0 - epsilon)
-        
-        codebook = new_codebook
         current_size = codebook.shape[0]
-        
-        print(f"  分裂迭代 {split_iteration}: 码本大小 {old_size} → {current_size}")
         
         # 3. 迭代优化
         for iteration in range(max_iterations):
-            # 计算每个特征到每个码字的距离
-            distances = np.zeros((n_features, current_size))
+            # 向量化计算所有距离 (广播机制)
+            # (x - c)^2 = x^2 + c^2 - 2*x·c
+            x_sq = np.sum(features ** 2, axis=1, keepdims=True)  # (n_samples, 1)
+            c_sq = np.sum(codebook ** 2, axis=1)  # (current_size,)
+            x_dot_c = np.dot(features, codebook.T)  # (n_samples, current_size)
             
-            for i in range(n_features):
-                for j in range(current_size):
-                    # 计算欧氏距离平方
-                    dist_sq = 0.0
-                    for d in range(feature_dim):
-                        diff = features[i, d] - codebook[j, d]
-                        dist_sq += diff * diff
-                    distances[i, j] = dist_sq
+            # 距离矩阵: (n_samples, current_size)
+            distances = x_sq + c_sq - 2 * x_dot_c
             
-            # 为每个特征分配最近的码字
-            nearest_idx = np.zeros(n_features, dtype=int)
-            for i in range(n_features):
-                min_dist = distances[i, 0]
-                min_idx = 0
-                for j in range(1, current_size):
-                    if distances[i, j] < min_dist:
-                        min_dist = distances[i, j]
-                        min_idx = j
-                nearest_idx[i] = min_idx
+            # 分配最近码字
+            nearest_idx = np.argmin(distances, axis=1)
             
-            # 计算新的形心
-            new_cb = np.zeros((current_size, feature_dim))
+            # 更新码本
+            new_codebook = np.zeros_like(codebook)
             counts = np.zeros(current_size)
             
-            # 累加每个胞腔的特征
-            for i in range(n_features):
-                idx = nearest_idx[i]
-                for d in range(feature_dim):
-                    new_cb[idx, d] += features[i, d]
-                counts[idx] += 1
-            
-            # 计算均值并更新码本
-            codebook_changed = False
+            # 向量化统计和更新
             for i in range(current_size):
-                if counts[i] > 0:
-                    for d in range(feature_dim):
-                        old_val = codebook[i, d]
-                        new_val = new_cb[i, d] / counts[i]
-                        codebook[i, d] = new_val
-                        if abs(old_val - new_val) > 1e-6:
-                            codebook_changed = True
+                mask = nearest_idx == i
+                if np.any(mask):
+                    new_codebook[i] = np.mean(features[mask], axis=0)
+                    counts[i] = np.sum(mask)
                 else:
-                    # 空胞腔处理：使用随机值
-                    for d in range(feature_dim):
-                        codebook[i, d] = np.random.uniform(-0.5, 0.5)
-                    codebook_changed = True
+                    # 空胞腔：随机扰动
+                    new_codebook[i] = codebook[i] * (1 + np.random.uniform(-0.1, 0.1))
+                    counts[i] = 0
             
-            # 如果码本变化很小，提前结束迭代
-            if not codebook_changed:
+            # 检查收敛
+            if np.allclose(codebook, new_codebook, atol=1e-6):
                 break
+            
+            codebook = new_codebook
+        
+        print(f"    码本大小: {current_size}, 非空胞腔: {np.sum(counts > 0)}")
     
-    print(f"  LBG训练完成，最终码本大小: {codebook.shape[0]}")
     return codebook
 
 # ==========================================
-# 第三部分：增强版主逻辑
+# 第三部分：高效特征提取
+# ==========================================
+
+def extract_features_from_file(file_path, p=12, energy_threshold_ratio=0.02):
+    """从单个文件高效提取特征 (向量化)"""
+    fs, data = load_wav(file_path)
+    if fs is None:
+        return None, 0
+    
+    # 参数设置
+    frame_len = int(0.025 * fs)  # 25ms
+    frame_shift = int(0.01 * fs)  # 10ms
+    
+    # 检查数据长度
+    if len(data) < frame_len * 10:
+        return None, 0
+    
+    # 1. 向量化分帧
+    num_frames = (len(data) - frame_len) // frame_shift
+    indices = np.arange(frame_len).reshape(1, -1) + \
+              np.arange(0, num_frames * frame_shift, frame_shift).reshape(-1, 1)
+    frames = data[indices.astype(int)]
+    
+    # 2. 向量化能量计算
+    energies = np.sum(frames ** 2, axis=1)
+    
+    # 3. 自适应能量门限
+    # 只考虑前200帧计算最大能量（避免静音段影响）
+    sample_size = min(200, num_frames)
+    max_energy = np.max(energies[:sample_size])
+    
+    if max_energy < 1e-12:
+        return None, 0
+    
+    threshold = max_energy * energy_threshold_ratio
+    
+    # 4. 选择有效帧
+    valid_mask = energies > threshold
+    valid_frames = frames[valid_mask]
+    
+    if len(valid_frames) == 0:
+        return None, 0
+    
+    # 5. 批量计算特征
+    features_list = []
+    for frame in valid_frames:
+        ar_coeffs = durbin_step_optimized(frame, p)
+        if ar_coeffs is not None:
+            k_coeffs = ar_to_reflection_optimized(ar_coeffs)
+            if k_coeffs is not None:
+                features_list.append(k_coeffs)
+    
+    if len(features_list) == 0:
+        return None, 0
+    
+    features = np.array(features_list)
+    return features, len(valid_frames)
+
+# ==========================================
+# 第四部分：主程序 (性能优化版)
 # ==========================================
 
 def main():
-    print("=" * 60)
-    print("语音信号处理任务五：LPC特征提取与矢量量化")
-    print("=" * 60)
+    print("=" * 70)
+    print("语音信号处理任务五：高效LPC特征提取与矢量量化")
+    print("=" * 70)
     
-    start_time = time.time()
+    total_start = time.time()
     
-    # 1. 路径处理
-    data_dir = "d:/speechdata/"
-    if not os.path.exists(data_dir):
-        print(f"提示: 默认路径 '{data_dir}' 不存在")
-        print("请选择包含语音文件的文件夹...")
+    # 1. 获取数据目录
+    default_dir = "d:/speechdata/"
+    if os.path.exists(default_dir):
+        data_dir = default_dir
+    else:
+        print(f"默认路径不存在: {default_dir}")
         root = tk.Tk()
         root.withdraw()
-        data_dir = filedialog.askdirectory(title="请选择语音数据集文件夹")
+        data_dir = filedialog.askdirectory(title="选择语音数据集文件夹")
         if not data_dir:
-            print("未选择目录，程序退出")
+            print("程序退出")
             return
     
     print(f"数据目录: {data_dir}")
     
-    # 2. 收集所有WAV文件
+    # 2. 收集WAV文件
     wav_files = []
     for root_dir, _, files in os.walk(data_dir):
-        for filename in files:
-            if filename.lower().endswith('.wav'):
-                full_path = os.path.join(root_dir, filename)
-                wav_files.append(full_path)
+        for f in files:
+            if f.lower().endswith('.wav'):
+                wav_files.append(os.path.join(root_dir, f))
     
     if not wav_files:
-        print("错误: 未找到任何 .wav 文件")
+        print("错误: 未找到WAV文件")
         return
     
     print(f"找到 {len(wav_files)} 个WAV文件")
     
     # 3. 设置处理参数
-    p = 12  # LPC阶数
-    max_files = 100  # 最大处理文件数
-    all_reflection_coeffs = []
+    p = 12
+    max_files = min(100, len(wav_files))  # 最多处理30个文件
+    all_features = []
+    file_stats = []
     
-    print(f"\n开始处理前 {min(max_files, len(wav_files))} 个文件...")
+    print(f"\n开始处理前 {max_files} 个文件...")
+    print("-" * 70)
     
-    # 4. 特征提取
-    processed_count = 0
-    for file_idx, file_path in enumerate(wav_files[:max_files]):
-        file_start_time = time.time()
-        print(f"\n[{file_idx+1}/{min(max_files, len(wav_files))}] 处理: {os.path.basename(file_path)}")
+    # 4. 并行化特征提取 (逐个文件处理，但文件内向量化)
+    successful_files = 0
+    for i, file_path in enumerate(wav_files[:max_files]):
+        file_start = time.time()
         
-        # 加载音频
-        fs, data = load_wav(file_path)
-        if fs is None or data is None:
-            continue
+        print(f"[{i+1:2d}/{max_files}] {os.path.basename(file_path):30s}", end="", flush=True)
         
-        # 检查数据有效性
-        if len(data) < int(0.025 * fs) * 10:  # 至少10帧
-            print(f"  跳过: 音频太短 ({len(data)/fs:.2f}秒)")
-            continue
+        features, num_valid_frames = extract_features_from_file(file_path, p)
         
-        # 计算帧参数
-        frame_len = int(0.025 * fs)  # 25ms
-        frame_shift = int(0.01 * fs)  # 10ms
-        num_frames = (len(data) - frame_len) // frame_shift
-        
-        print(f"  采样率: {fs} Hz, 总帧数: {num_frames}")
-        
-        # 计算能量门限 (优化版)
-        # 只检查前200帧以减少计算量
-        sample_frames = min(200, num_frames)
-        max_energy = 0.0
-        
-        for i in range(sample_frames):
-            start = i * frame_shift
-            frame = data[start:start+frame_len]
-            frame_energy = 0.0
-            for j in range(frame_len):
-                frame_energy += frame[j] * frame[j]
-            if frame_energy > max_energy:
-                max_energy = frame_energy
-        
-        if max_energy < 1e-10:  # 可能是静音文件
-            print(f"  跳过: 音频能量过低 (可能是静音)")
-            continue
-        
-        # 设置自适应门限
-        threshold = max_energy * 0.02  # 2% 的峰值能量
-        print(f"  能量门限: {threshold:.6e}")
-        
-        # 提取特征
-        features_from_file = 0
-        for i in range(num_frames):
-            start = i * frame_shift
-            frame = data[start:start+frame_len]
+        if features is not None:
+            all_features.append(features)
+            successful_files += 1
+            file_time = time.time() - file_start
             
-            # 计算帧能量
-            frame_energy = 0.0
-            for j in range(frame_len):
-                frame_energy += frame[j] * frame[j]
+            stats = {
+                'name': os.path.basename(file_path),
+                'features': len(features),
+                'valid_frames': num_valid_frames,
+                'time': file_time
+            }
+            file_stats.append(stats)
             
-            # 能量判断
-            if frame_energy > threshold:
-                # 计算AR系数
-                ar_coeffs = durbin_step(frame, p)
-                
-                if ar_coeffs is not None:
-                    # 转换为反射系数
-                    reflection_coeffs = ar_to_reflection(ar_coeffs)
-                    
-                    if reflection_coeffs is not None and len(reflection_coeffs) == p:
-                        all_reflection_coeffs.append(reflection_coeffs)
-                        features_from_file += 1
-        
-        processed_count += 1
-        file_time = time.time() - file_start_time
-        print(f"  提取特征: {features_from_file} 个, 耗时: {file_time:.2f}秒")
+            print(f" ✓ {len(features):4d}特征 ({file_time:.2f}s)")
+        else:
+            file_time = time.time() - file_start
+            print(f" ✗ 无有效特征 ({file_time:.2f}s)")
     
-    # 5. 检查特征数据
-    if len(all_reflection_coeffs) == 0:
-        print("\n" + "=" * 60)
-        print("错误: 未提取到任何有效特征")
-        print("可能原因:")
-        print("1. 音频文件可能全是静音或能量过低")
-        print("2. 音频格式不支持或损坏")
-        print("3. 能量门限设置可能不合理")
-        print("=" * 60)
+    # 5. 合并所有特征
+    if len(all_features) == 0:
+        print("\n错误: 未提取到任何特征")
+        print("检查: 1.音频格式 2.能量门限 3.算法参数")
         return
     
+    features_matrix = np.vstack(all_features)
     print(f"\n特征提取完成!")
-    print(f"处理文件数: {processed_count}")
-    print(f"总特征数: {len(all_reflection_coeffs)}")
+    print(f"成功处理文件: {successful_files}/{max_files}")
+    print(f"总特征数量: {len(features_matrix):,}")
+    print(f"特征维度: {features_matrix.shape[1]}阶")
     
-    # 6. 转换为numpy数组
-    features = np.array(all_reflection_coeffs)
-    print(f"特征矩阵形状: {features.shape}")
+    # 6. LBG训练
+    print("\n" + "-" * 70)
+    print("开始LBG矢量量化训练...")
+    lbg_start = time.time()
     
-    # 7. LBG聚类训练
-    print("\n开始LBG聚类训练...")
-    lbg_start_time = time.time()
-    
-    codebook = lbg_train_optimized(features, cb_size=16, max_iterations=10)
+    codebook = lbg_train_vectorized(features_matrix, cb_size=16)
     
     if len(codebook) == 0:
-        print("聚类失败: 无法生成码本")
+        print("LBG训练失败")
         return
     
-    lbg_time = time.time() - lbg_start_time
-    print(f"LBG训练完成，耗时: {lbg_time:.2f}秒")
-    print(f"最终码本形状: {codebook.shape}")
+    lbg_time = time.time() - lbg_start
+    print(f"LBG训练完成! 耗时: {lbg_time:.2f}秒")
+    print(f"码本大小: {codebook.shape[0]}x{codebook.shape[1]}")
     
-    # 8. 保存码本
+    # 7. 保存结果
     try:
-        np.save("codebook.npy", codebook)
-        print(f"码本已保存到: codebook.npy")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_file = f"codebook_{timestamp}.npy"
+        np.save(output_file, codebook)
+        print(f"码本已保存: {output_file}")
     except Exception as e:
-        print(f"保存码本失败: {e}")
+        print(f"保存失败: {e}")
     
-    # 9. 可视化结果 (使用英文确保可移植性)
+    # 8. 统计信息
+    total_time = time.time() - total_start
+    
+    print("\n" + "=" * 70)
+    print("性能统计:")
+    print(f"总处理时间: {total_time:.2f}秒")
+    print(f"平均每文件: {total_time/max_files:.2f}秒")
+    print(f"特征提取速率: {len(features_matrix)/total_time:.1f} 特征/秒")
+    
+    if file_stats:
+        best_file = max(file_stats, key=lambda x: x['features'])
+        worst_file = min(file_stats, key=lambda x: x['features'])
+        print(f"\n最佳文件: {best_file['name']} ({best_file['features']}特征)")
+        print(f"最差文件: {worst_file['name']} ({worst_file['features']}特征)")
+    
+    # 9. 可视化 (英文确保可移植性)
     print("\n生成可视化结果...")
-    plt.figure(figsize=(14, 6))
+    plt.figure(figsize=(15, 5))
     
-    # 图1: 特征空间散点图 (前两维)
-    plt.subplot(1, 2, 1)
-    plt.scatter(features[:, 0], features[:, 1], 
-                s=1, c='gray', alpha=0.1, label='Feature Points')
-    plt.scatter(codebook[:, 0], codebook[:, 1], 
-                c='red', marker='x', s=100, linewidth=2, label='Codebook Vectors')
-    plt.xlabel("Reflection Coefficient K1")
-    plt.ylabel("Reflection Coefficient K2")
-    plt.title("Feature Space Distribution (First Two Dimensions)")
+    # 图1: 特征分布
+    plt.subplot(1, 3, 1)
+    plt.scatter(features_matrix[:, 0], features_matrix[:, 1], 
+                s=1, alpha=0.1, c='blue', label='Features')
+    plt.scatter(codebook[:, 0], codebook[:, 1],
+                s=100, marker='X', c='red', edgecolors='black', 
+                linewidth=1.5, label='Codebook')
+    plt.xlabel('Reflection Coefficient K1')
+    plt.ylabel('Reflection Coefficient K2')
+    plt.title('Feature Distribution (K1 vs K2)')
     plt.grid(True, alpha=0.3)
     plt.legend()
     
-    # 图2: 码本矩阵热力图
-    plt.subplot(1, 2, 2)
-    plt.imshow(codebook.T, aspect='auto', cmap='viridis', interpolation='nearest')
-    plt.xlabel("Codebook Index (0-15)")
-    plt.ylabel("Reflection Coefficient Order (1-12)")
-    plt.title("Codebook Matrix Visualization")
-    plt.colorbar(label="Coefficient Value")
+    # 图2: 码本热力图
+    plt.subplot(1, 3, 2)
+    im = plt.imshow(codebook.T, aspect='auto', cmap='viridis', 
+                    interpolation='nearest')
+    plt.colorbar(im, label='Coefficient Value')
+    plt.xlabel('Codebook Index (0-15)')
+    plt.ylabel('Coefficient Order (1-12)')
+    plt.title('Codebook Matrix')
+    plt.xticks(range(16))
+    plt.yticks(range(12))
     
-    # 添加网格线
-    plt.gca().set_xticks(np.arange(-0.5, 16, 1), minor=True)
-    plt.gca().set_yticks(np.arange(-0.5, 12, 1), minor=True)
-    plt.grid(which='minor', color='w', linestyle='-', linewidth=0.5)
+    # 图3: 反射系数统计
+    plt.subplot(1, 3, 3)
+    mean_coeffs = np.mean(features_matrix, axis=0)
+    std_coeffs = np.std(features_matrix, axis=0)
     
+    x_pos = np.arange(1, p + 1)
+    plt.errorbar(x_pos, mean_coeffs, yerr=std_coeffs, 
+                 fmt='o-', capsize=5, linewidth=2, markersize=6,
+                 label='Mean ± Std')
+    plt.xlabel('Coefficient Order')
+    plt.ylabel('Coefficient Value')
+    plt.title('Reflection Coefficients Statistics')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.xticks(x_pos)
+    
+    plt.suptitle(f'LPC-VQ Analysis (Total Features: {len(features_matrix):,})', 
+                 fontsize=14, fontweight='bold')
     plt.tight_layout()
     
-    # 10. 计算并显示总体统计信息
-    total_time = time.time() - start_time
-    print("\n" + "=" * 60)
-    print("任务完成统计:")
-    print(f"总耗时: {total_time:.2f}秒")
-    print(f"处理文件: {processed_count}个")
-    print(f"提取特征: {len(features)}个")
-    print(f"码本大小: {codebook.shape[0]}x{codebook.shape[1]}")
-    print(f"特征维度: {features.shape[1]}阶")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("任务完成! 请查看可视化结果...")
+    print("=" * 70)
     
     plt.show()
 
