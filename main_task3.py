@@ -65,7 +65,7 @@ def calc_autocorr_manual(frame, k_min, k_max):
 
 def pitch_detection_compliant(data, fs):
     """合规版基音检测算法"""
-    print("正在进行预处理（中心削波）...")
+    print("Preprocessing (center clipping)...")
     start_time = time.time()
     
     # 1. 预处理：使用中心削波（课程推荐方法）
@@ -76,9 +76,9 @@ def pitch_detection_compliant(data, fs):
     frame_shift = int(0.010 * fs)    # 10ms
     num_frames = (len(processed_data) - frame_len) // frame_shift
     
-    print(f"总帧数: {num_frames}")
-    print(f"帧长: {frame_len}点 ({frame_len/fs*1000:.1f}ms)")
-    print(f"帧移: {frame_shift}点 ({frame_shift/fs*1000:.1f}ms)")
+    print(f"Total frames: {num_frames}")
+    print(f"Frame length: {frame_len} samples ({frame_len/fs*1000:.1f}ms)")
+    print(f"Frame shift: {frame_shift} samples ({frame_shift/fs*1000:.1f}ms)")
     
     # 3. 基音搜索范围 (60Hz-500Hz，转换为采样点数)
     pitch_min_hz = 60   # 最低基音频率
@@ -86,8 +86,8 @@ def pitch_detection_compliant(data, fs):
     k_min = int(fs / pitch_max_hz)  # 最小周期点数
     k_max = int(fs / pitch_min_hz)  # 最大周期点数
     
-    print(f"基音周期搜索范围: {k_min}-{k_max} 点")
-    print(f"对应频率范围: {pitch_min_hz}-{pitch_max_hz} Hz")
+    print(f"Pitch period search range: {k_min}-{k_max} samples")
+    print(f"Corresponding frequency range: {pitch_min_hz}-{pitch_max_hz} Hz")
     
     # 4. 结果数组
     pitch_periods = np.zeros(num_frames)  # 基音周期（采样点数）
@@ -150,8 +150,8 @@ def pitch_detection_compliant(data, fs):
     total_time = time.time() - start_time
     voiced_count = np.sum(voiced_decisions)
     
-    print(f"\n基音检测完成，耗时: {total_time:.2f}秒")
-    print(f"浊音帧数: {voiced_count}/{num_frames} ({voiced_count/num_frames*100:.1f}%)")
+    print(f"\nPitch detection completed in: {total_time:.2f} seconds")
+    print(f"Voiced frames: {voiced_count}/{num_frames} ({voiced_count/num_frames*100:.1f}%)")
     
     return pitch_periods, voiced_decisions, frame_shift
 
@@ -162,8 +162,8 @@ def pitch_detection_compliant(data, fs):
 def main():
     """主函数 - 严格按任务要求实现"""
     print("=" * 70)
-    print("语音信号处理 - 任务三：基音周期检测")
-    print("实现方法：自相关法 + 中心削波预处理")
+    print("Speech Signal Processing - Task 3: Pitch Period Detection")
+    print("Method: Autocorrelation + Center Clipping")
     print("=" * 70)
     
     # 1. 文件选择（兼容IDLE环境）
@@ -174,57 +174,57 @@ def main():
         
         audio_file = filedialog.askopenfilename(
             initialdir=current_dir,
-            title="请选择语音文件进行基音检测",
+            title="Select speech file for pitch detection",
             filetypes=(("WAV files", "*.wav"), ("All files", "*.*"))
         )
         
         if not audio_file:
-            print("未选择文件，程序退出")
+            print("No file selected, exiting...")
             return
     except Exception as e:
-        print(f"文件选择失败: {e}")
-        print("请将音频文件放在当前目录，并输入文件名:")
-        audio_file = input("文件名: ").strip()
+        print(f"File selection failed: {e}")
+        print("Please place audio file in current directory and enter filename:")
+        audio_file = input("Filename: ").strip()
         if not os.path.exists(audio_file):
-            print("文件不存在，程序退出")
+            print("File not found, exiting...")
             return
     
-    print(f"\n处理文件: {os.path.basename(audio_file)}")
+    print(f"\nProcessing file: {os.path.basename(audio_file)}")
     
     # 2. 加载音频
     try:
         fs, data = load_wav(audio_file)
         duration = len(data) / fs
-        print(f"采样率: {fs} Hz")
-        print(f"时长: {duration:.2f} 秒")
-        print(f"总采样点数: {len(data)}")
+        print(f"Sample rate: {fs} Hz")
+        print(f"Duration: {duration:.2f} seconds")
+        print(f"Total samples: {len(data)}")
     except Exception as e:
-        print(f"加载音频失败: {e}")
+        print(f"Failed to load audio: {e}")
         return
     
     # 3. 基音检测
     print("\n" + "-" * 70)
-    print("开始基音周期检测...")
+    print("Starting pitch period detection...")
     
     pitch_periods, voiced, frame_shift = pitch_detection_compliant(data, fs)
     
-    # 4. 计算统计信息（用于报告）
+    # 4. 计算统计信息
     valid_pitches = pitch_periods[voiced == 1]
     if len(valid_pitches) > 0:
         mean_period = np.mean(valid_pitches)
         std_period = np.std(valid_pitches)
         mean_freq = fs / mean_period if mean_period > 0 else 0
         
-        print(f"\n基音周期统计（采样点数）:")
-        print(f"  平均值: {mean_period:.1f} 点")
-        print(f"  标准差: {std_period:.1f} 点")
-        print(f"  范围: {np.min(valid_pitches):.0f} - {np.max(valid_pitches):.0f} 点")
-        print(f"  对应平均频率: {mean_freq:.1f} Hz")
+        print(f"\nPitch period statistics (in samples):")
+        print(f"  Mean: {mean_period:.1f} samples")
+        print(f"  Std: {std_period:.1f} samples")
+        print(f"  Range: {np.min(valid_pitches):.0f} - {np.max(valid_pitches):.0f} samples")
+        print(f"  Corresponding mean frequency: {mean_freq:.1f} Hz")
     
     print("-" * 70)
     
     # 5. 绘图 - 严格按任务要求
-    print("\n生成结果图表...")
+    print("\nGenerating results plots...")
     
     plt.figure(figsize=(12, 8))
     
@@ -294,32 +294,9 @@ def main():
     
     plt.tight_layout()
     
-    # 6. 保存结果（可选）
-    save_option = input("\n是否保存检测结果到文本文件？(y/n): ")
-    if save_option.lower() == 'y':
-        output_file = f"task3_results_{os.path.splitext(os.path.basename(audio_file))[0]}.txt"
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write("=" * 60 + "\n")
-            f.write("任务三：基音周期检测结果\n")
-            f.write(f"文件: {audio_file}\n")
-            f.write(f"采样率: {fs} Hz\n")
-            f.write(f"时长: {duration:.2f} 秒\n")
-            f.write("=" * 60 + "\n\n")
-            
-            f.write("帧号, 时间(s), 基音周期(采样点数), 清浊音判别\n")
-            f.write("-" * 60 + "\n")
-            
-            for i in range(len(pitch_periods)):
-                time_sec = i * frame_shift / fs
-                v_u_label = "浊音" if voiced[i] == 1 else "清音/静音"
-                f.write(f"{i:4d}, {time_sec:6.3f}, {pitch_periods[i]:8.1f}, {v_u_label}\n")
-        
-        print(f"结果已保存到: {output_file}")
-    
     print("\n" + "=" * 70)
-    print("任务三完成！")
-    print("注：图表1为参考波形，图表2-3为任务要求输出")
+    print("Task 3 Completed!")
+    print("Note: Chart 1 is reference waveform, Charts 2-3 are required outputs")
     print("=" * 70)
     
     plt.show()
