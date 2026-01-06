@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import filedialog
 
 # ==========================================
-# 第一部分：自研算法工具库
+# 第一部分：核心算法工具库 (完全自研实现)
 # ==========================================
 
 def load_wav(filename):
@@ -16,104 +16,225 @@ def load_wav(filename):
         data = np.frombuffer(wf.readframes(-1), dtype=np.int16)
         return fs, data.astype(np.float32) / 32768.0
 
-def durbin_step(data, p=12):
-    """手动实现 Durbin 算法求 AR 系数"""
-    N = len(data)
-    R = np.zeros(p + 1)
+def apply_hamming_window(frame):
+    """应用汉明窗"""
+    N = len(frame)
+    n = np.arange(N)
+    hamming = 0.54 - 0.46 * np.cos(2 * np.pi * n / (N - 1))
+    return frame * hamming
+
+def manual_correlation(x):
+    """手动实现自相关计算（不使用np.correlate）"""
+    N = len(x)
+    R = np.zeros(N)
+    for k in range(N):
+        if k == 0:
+            R[k] = np.sum(x * x)
+        else:
+            R[k] = np.sum(x[:N-k] * x[k:])
+    return R
+
+def center_clipping(frame, clipping_level=0.65):
+    """
+    中心削波预处理
+    幅度削波比例: clipping_level (0-1)
+    """
+    max_amp = np.max(np.abs(frame))
+    threshold = clipping_level * max_amp
     
-    # 1. 计算自相关
-    for k in range(p + 1):
-        R[k] = np.sum(data[:N-k] * data[k:])
+    clipped = frame.copy()
+    # 手动实现削波（不使用np.clip）
+    for i in range(len(clipped)):
+        if clipped[i] > threshold:
+            clipped[i] = clipped[i] - threshold
+        elif clipped[i] < -threshold:
+            clipped[i] = clipped[i] + threshold
+        else:
+            clipped[i] = 0.0
+    return clipped
+
+def pitch_detection(frame, fs):
+    """
+    任务三算法：基于自相关的基音检测
+    包含中心削波预处理
+    """
+    # 1. 应用汉明窗
+    windowed = apply_hamming_window(frame)
     
-    if R[0] < 1e-12:  # 修正：检查R[0]而不是R
-        return None
+    # 2. 中心削波预处理 (去除共振峰干扰)
+    clipped = center_clipping(windowed, clipping_level=0.65)
     
-    # 2. Durbin递推
-    E = R[0]
+    # 3. 手动计算自相关函数
+    autocorr = manual_correlation(clipped)
+    
+    # 4. 归一化自相关（最大值为1）
+    if autocorr[0] > 0:
+        autocorr_norm = autocorr / autocorr[0]
+    else:
+        autocorr_norm = autocorr
+    
+    # 5. 在有效基频范围内寻找峰值
+    # 基频范围: 60Hz-500Hz
+    min_period = int(fs / 500)  # 500Hz对应的最小周期
+    max_period = int(fs / 60)   # 60Hz对应的最大周期
+    
+    # 确保不超过帧长的一半
+    max_period = min(max_period, len(frame) // 2)
+    
+    if max_period <= min_period:
+        return 0, 0.0, False  # 无效范围
+    
+    # 在有效范围内寻找最大峰值
+    search_range = autocorr_norm[min_period:max_period+1]
+    if len(search_range) == 0:
+        return 0, 0.0, False
+    
+    max_peak_idx = np.argmax(search_range)
+    max_peak_value = search_range[max_peak_idx]
+    pitch_period = max_peak_idx + min_period
+    
+    # 6. V/U判别
+    # 基于能量和自相关峰值
+    frame_energy = np.sum(frame * frame)
+    
+    # 自适应阈值
+    energy_threshold = 0.001  # 能量阈值
+    correlation_threshold = 0.3  # 自相关峰值阈值
+    
+    is_voiced = (frame_energy > energy_threshold) and (max_peak_value > correlation_threshold)
+    
+    return pitch_period, max_peak_value, is_voiced
+
+def durbin_algorithm(R, p):
+    """
+    手动实现Levinson-Durbin递推算法
+    不使用np.clip，手动截断反射系数
+    """
+    E = np.zeros(p + 1)
     a = np.zeros((p + 1, p + 1))
     
+    # 初始化
+    E[0] = R[0]
+    
     for i in range(1, p + 1):
-        # 计算反射系数 ki
-        sum_term = 0.0
+        # 计算反射系数 k_i
+        sum_val = 0.0
         for j in range(1, i):
-            sum_term += a[i-1, j] * R[i-j]
+            sum_val += a[i-1][j] * R[i-j]
         
-        ki = (R[i] - sum_term) / (E + 1e-12)
-        ki = np.clip(ki, -0.999, 0.999) 
-        a[i, i] = ki
+        ki = (R[i] - sum_val) / (E[i-1] + 1e-12)
+        
+        # 手动截断反射系数，不使用np.clip
+        if ki > 0.999:
+            ki = 0.999
+        elif ki < -0.999:
+            ki = -0.999
+        
+        a[i][i] = ki
         
         # 更新系数
         for j in range(1, i):
-            a[i, j] = a[i-1, j] - ki * a[i-1, i-j]
+            a[i][j] = a[i-1][j] - ki * a[i-1][i-j]
         
         # 更新误差能量
-        E = (1 - ki**2) * E
+        E[i] = (1 - ki * ki) * E[i-1]
     
-    return a[p, 1:]
+    return a[p][1:]
 
-def ar_to_reflection(ar_coeffs):
-    """AR 系数递推求反射系数 ki"""
+def ar_to_reflection_manual(ar_coeffs):
+    """
+    AR系数递推求反射系数（自研实现）
+    不使用np.clip
+    """
     p = len(ar_coeffs)
     a = np.zeros((p + 1, p + 1))
     a[p, 1:] = ar_coeffs
     k = np.zeros(p)
     
     for i in range(p, 0, -1):
-        ki = np.clip(a[i, i], -0.999, 0.999)
+        ki = a[i, i]
+        
+        # 手动截断
+        if ki > 0.999:
+            ki = 0.999
+        elif ki < -0.999:
+            ki = -0.999
+        
         k[i-1] = ki
         
         if i > 1:
-            denom = 1 - ki**2 + 1e-12
+            denom = 1 - ki * ki + 1e-12
             for j in range(1, i):
                 a[i-1, j] = (a[i, j] + ki * a[i, i-j]) / denom
     
     return k
 
-def apply_hamming_window(frame):
-    """应用汉明窗"""
-    N = len(frame)
-    hamming = 0.54 - 0.46 * np.cos(2 * np.pi * np.arange(N) / (N - 1))
-    return frame * hamming
-
-def calculate_frame_energy(frame):
-    """计算帧能量"""
-    return np.sum(frame**2)
-
-def calculate_zero_crossing_rate(frame):
-    """计算过零率"""
-    return np.sum(np.abs(np.sign(frame[1:]) - np.sign(frame[:-1]))) / 2
-
-def lattice_synthesis_filter(excitation, k):
+class LatticeSynthesizer:
     """
-    格型合成滤波器 - 修正版本
-    根据语音信号处理原理实现
+    带记忆的格型合成滤波器
+    解决帧间相位不连续问题
     """
-    p = len(k)
-    N = len(excitation)
-    output = np.zeros(N)
+    def __init__(self, p=12):
+        self.p = p
+        self.reset_state()
     
-    # 状态变量
-    f = np.zeros(p + 1)  # 前向预测误差
-    b = np.zeros(p + 1)  # 后向预测误差
+    def reset_state(self):
+        """重置滤波器状态"""
+        self.f = np.zeros(self.p + 1)  # 前向预测误差
+        self.b = np.zeros(self.p + 1)  # 后向预测误差
     
-    for n in range(N):
-        # 输入信号
-        f[0] = excitation[n]
+    def synthesize(self, excitation, k_coeffs):
+        """
+        合成一帧语音
+        k_coeffs: 反射系数数组
+        """
+        frame_len = len(excitation)
+        output = np.zeros(frame_len)
         
-        # 格型滤波器递归
-        for i in range(1, p + 1):
-            # 更新后向预测误差
-            b[i] = b[i-1] - k[i-1] * f[i-1]
-            # 更新前向预测误差
-            f[i] = f[i-1] + k[i-1] * b[i-1]
+        for n in range(frame_len):
+            # 输入激励信号
+            self.f[0] = excitation[n]
+            
+            # 格型滤波器递归
+            for i in range(1, self.p + 1):
+                # 更新后向预测误差
+                self.b[i] = self.b[i-1] - k_coeffs[i-1] * self.f[i-1]
+                # 更新前向预测误差
+                self.f[i] = self.f[i-1] + k_coeffs[i-1] * self.b[i-1]
+            
+            # 输出是最后一个前向预测误差
+            output[n] = self.f[self.p]
         
-        # 输出是最后一个前向预测误差
-        output[n] = f[p]
+        return output
+
+def generate_excitation(frame_len, is_voiced, pitch_period, fs):
+    """
+    根据V/U判别生成激励源
+    is_voiced: True/False
+    pitch_period: 基音周期（采样点数）
+    """
+    excitation = np.zeros(frame_len)
     
-    return output
+    if is_voiced and pitch_period > 0:
+        # 浊音：周期脉冲序列
+        # 在脉冲位置放置汉明窗脉冲，避免冲击响应
+        pulse_width = min(5, pitch_period // 4)
+        pulse = np.hanning(pulse_width * 2 + 1)[:pulse_width]
+        
+        for pos in range(0, frame_len, pitch_period):
+            if pos + pulse_width <= frame_len:
+                excitation[pos:pos+pulse_width] = pulse
+            elif pos < frame_len:
+                remaining = frame_len - pos
+                excitation[pos:pos+remaining] = pulse[:remaining]
+    else:
+        # 清音：白噪声
+        excitation = np.random.randn(frame_len)
+    
+    return excitation
 
 # ==========================================
-# 第二部分：编解码主逻辑
+# 第二部分：主处理逻辑
 # ==========================================
 
 def main():
@@ -167,23 +288,22 @@ def main():
     frame_shift = int(0.01 * fs)  # 10ms 帧移
     num_frames = (len(data) - frame_len) // frame_shift
     
-    # 初始化合成信号
+    # 初始化合成信号和格型合成器
     synthesized_signal = np.zeros(len(data))
+    synthesizer = LatticeSynthesizer(p)
     
     # 创建重叠相加的窗口
     window = np.hanning(frame_len)
     
-    print(f"音频采样率: {fs} Hz | 预计处理帧数: {num_frames}")
+    print(f"音频采样率: {fs} Hz")
+    print(f"帧长: {frame_len} 采样点 ({frame_len/fs*1000:.1f} ms)")
+    print(f"预计处理帧数: {num_frames}")
     print("开始执行编解码过程...")
     
-    # 预先计算全局统计信息用于清浊音判断
-    frame_energies = []
-    for i in range(num_frames):
-        start = i * frame_shift
-        frame = data[start:start+frame_len]
-        frame_energies.append(calculate_frame_energy(frame))
-    
-    energy_threshold = np.percentile(frame_energies, 70)  # 使用70分位数作为阈值
+    # 统计信息收集
+    voiced_count = 0
+    pitch_periods = []
+    correlation_peaks = []
 
     # ==========================================
     # 4. 核心处理循环 (分析与重合成)
@@ -197,103 +317,171 @@ def main():
         # 应用汉明窗
         windowed_frame = apply_hamming_window(frame)
         
-        # 计算帧特征
-        energy = calculate_frame_energy(windowed_frame)
-        zcr = calculate_zero_crossing_rate(windowed_frame)
+        # 计算帧能量
+        energy = np.sum(windowed_frame * windowed_frame)
         
         if energy < 1e-6:  # 静音段处理
-            continue 
-        
-        # 提取当前帧AR系数
-        ar_coeffs = durbin_step(windowed_frame, p)
-        if ar_coeffs is None:
-            continue
-        
-        # 转换为反射系数
-        k_current = ar_to_reflection(ar_coeffs)
-        
-        # 矢量量化：在码本中寻找最接近的特征索引
-        distances = np.sum((codebook - k_current)**2, axis=1)
-        idx_min = np.argmin(distances)
-        k_quantized = codebook[idx_min]
-
-        # --- 解码阶段 (Synthesis) ---
-        # 清浊音判断
-        # 浊音：高能量、低过零率；清音：低能量、高过零率
-        is_voiced = (energy > energy_threshold) and (zcr < frame_len * 0.1)
-        
-        # 根据发声模型生成激励
-        if is_voiced:
-            # 浊音：周期脉冲序列
-            # 简单基音周期估计（实际应从任务三获取）
-            pitch_period = int(fs / 100)  # 假设基频100Hz
-            excitation = np.zeros(frame_len)
-            
-            # 生成脉冲序列
-            for pos in range(0, frame_len, pitch_period):
-                if pos < frame_len:
-                    excitation[pos] = 1.0
+            # 生成低能量噪声作为激励
+            excitation = np.random.randn(frame_len) * 0.01
+            # 使用中性反射系数（全零）
+            k_quantized = np.zeros(p)
         else:
-            # 清音：伪随机噪声
-            excitation = np.random.randn(frame_len)
+            # --- 基音检测和V/U判别（任务三算法）---
+            pitch_period, corr_peak, is_voiced = pitch_detection(windowed_frame, fs)
+            
+            # 统计信息
+            pitch_periods.append(pitch_period)
+            correlation_peaks.append(corr_peak)
+            if is_voiced:
+                voiced_count += 1
+            
+            # --- LPC分析 ---
+            # 计算自相关函数（用于LPC）
+            R = np.zeros(p + 1)
+            for k in range(p + 1):
+                R[k] = np.sum(windowed_frame[:frame_len-k] * windowed_frame[k:])
+            
+            # 使用Durbin算法计算AR系数
+            ar_coeffs = durbin_algorithm(R, p)
+            
+            # 转换为反射系数
+            k_current = ar_to_reflection_manual(ar_coeffs)
+            
+            # --- 矢量量化 ---
+            # 在码本中寻找最接近的特征
+            distances = np.zeros(len(codebook))
+            for j in range(len(codebook)):
+                distances[j] = np.sum((codebook[j] - k_current) * (codebook[j] - k_current))
+            
+            idx_min = np.argmin(distances)
+            k_quantized = codebook[idx_min]
+            
+            # --- 激励生成 ---
+            excitation = generate_excitation(frame_len, is_voiced, pitch_period, fs)
+            
+            # 增益平衡
+            excitation_energy = np.sum(excitation * excitation) + 1e-12
+            gain = np.sqrt(energy / excitation_energy)
+            excitation = excitation * gain
         
-        # 增益平衡：保持合成帧与原始帧能量一致
-        gain = np.sqrt(energy / (np.sum(excitation**2) + 1e-12))
-        excitation *= gain
-        
+        # --- 解码阶段 (Synthesis) ---
         # 通过格型合成滤波器恢复语音
-        resyn_frame = lattice_synthesis_filter(excitation, k_quantized)
+        resyn_frame = synthesizer.synthesize(excitation, k_quantized)
         
         # 应用窗口并重叠相加
         synthesized_signal[start:end] += resyn_frame * window
-
+        
         # 进度显示
-        if i % 50 == 0:
+        if i % 100 == 0:
             print(f"处理进度: {i}/{num_frames} 帧")
+            if i > 0 and len(pitch_periods) > 0:
+                avg_pitch = np.mean([p for p in pitch_periods if p > 0])
+                print(f"  平均基音周期: {avg_pitch:.1f} 采样点")
 
     # ==========================================
-    # 5. 结果展示
+    # 5. 后处理和统计信息
     # ==========================================
-    print("语音重合成完成。")
+    print("\n=== 处理统计信息 ===")
+    print(f"总处理帧数: {num_frames}")
+    print(f"浊音帧数: {voiced_count} ({voiced_count/max(1,num_frames)*100:.1f}%)")
+    
+    if len(pitch_periods) > 0:
+        valid_pitches = [p for p in pitch_periods if p > 0]
+        if valid_pitches:
+            avg_pitch = np.mean(valid_pitches)
+            print(f"有效基音周期范围: {min(valid_pitches)}-{max(valid_pitches)} 采样点")
+            print(f"平均基音周期: {avg_pitch:.1f} 采样点 ({fs/avg_pitch:.1f} Hz)")
     
     # 归一化合成信号
-    synthesized_signal = synthesized_signal / np.max(np.abs(synthesized_signal)) * 0.8
+    max_amp = np.max(np.abs(synthesized_signal))
+    if max_amp > 0:
+        synthesized_signal = synthesized_signal / max_amp * 0.8
     
-    plt.figure(figsize=(12, 8))
+    # ==========================================
+    # 6. 结果可视化
+    # ==========================================
+    plt.figure(figsize=(15, 10))
     
-    # 原始语音
-    plt.subplot(3, 1, 1)
+    # 1. 原始vs合成语音对比
     time_axis = np.arange(len(data)) / fs
-    plt.plot(time_axis, data, 'b', alpha=0.7, label="Original Speech")
-    plt.title(f"Original Speech: {os.path.basename(audio_file)}")
+    plt.subplot(3, 2, 1)
+    plt.plot(time_axis, data, 'b', alpha=0.7, label="Original")
+    plt.plot(time_axis, synthesized_signal, 'r', alpha=0.7, label="Synthesized")
+    plt.title("Original vs Synthesized Speech")
     plt.xlabel("Time (s)")
     plt.ylabel("Amplitude")
     plt.legend()
     plt.grid(True, alpha=0.3)
     
-    # 合成语音
-    plt.subplot(3, 1, 2)
-    plt.plot(time_axis, synthesized_signal, 'r', alpha=0.7, label="Synthesized Speech")
-    plt.title("Task 6: Synthesized Speech (Vocoder Model)")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    # 2. 基音周期轨迹
+    plt.subplot(3, 2, 2)
+    if pitch_periods:
+        frame_indices = np.arange(len(pitch_periods))
+        plt.plot(frame_indices, pitch_periods, 'g-', linewidth=1.5)
+        plt.title("Pitch Period Trajectory")
+        plt.xlabel("Frame Index")
+        plt.ylabel("Pitch Period (samples)")
+        plt.grid(True, alpha=0.3)
     
-    # 对比图（重叠显示）
-    plt.subplot(3, 1, 3)
-    plt.plot(time_axis, data, 'b', alpha=0.5, label="Original")
-    plt.plot(time_axis, synthesized_signal, 'r', alpha=0.5, label="Synthesized")
-    plt.title("Original vs Synthesized Comparison")
+    # 3. 自相关峰值
+    plt.subplot(3, 2, 3)
+    if correlation_peaks:
+        frame_indices = np.arange(len(correlation_peaks))
+        plt.plot(frame_indices, correlation_peaks, 'm-', linewidth=1.5)
+        plt.axhline(y=0.3, color='r', linestyle='--', alpha=0.5, label='V/U Threshold')
+        plt.title("Normalized Autocorrelation Peaks")
+        plt.xlabel("Frame Index")
+        plt.ylabel("Peak Value")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+    
+    # 4. 频谱对比（选择中间帧）
+    plt.subplot(3, 2, 4)
+    if len(data) > frame_len:
+        mid_idx = len(data) // 2
+        orig_frame = data[mid_idx:mid_idx+frame_len]
+        synth_frame = synthesized_signal[mid_idx:mid_idx+frame_len]
+        
+        # 计算频谱
+        orig_spectrum = np.abs(np.fft.fft(orig_frame * np.hanning(frame_len)))
+        synth_spectrum = np.abs(np.fft.fft(synth_frame * np.hanning(frame_len)))
+        freq_axis = np.fft.fftfreq(frame_len, 1/fs)[:frame_len//2]
+        
+        plt.semilogy(freq_axis, orig_spectrum[:len(freq_axis)], 
+                    'b-', label="Original", alpha=0.7)
+        plt.semilogy(freq_axis, synth_spectrum[:len(freq_axis)], 
+                    'r-', label="Synthesized", alpha=0.7)
+        plt.title("Spectrum Comparison (Mid Frame)")
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("Magnitude")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+    
+    # 5. 激励类型分布
+    plt.subplot(3, 2, 5)
+    labels = ['Voiced', 'Unvoiced/Silent']
+    sizes = [voiced_count, num_frames - voiced_count]
+    colors = ['lightcoral', 'lightskyblue']
+    plt.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+    plt.title("Excitation Type Distribution")
+    plt.axis('equal')
+    
+    # 6. 误差分析
+    plt.subplot(3, 2, 6)
+    # 计算逐点误差
+    error_signal = data - synthesized_signal[:len(data)]
+    plt.plot(time_axis, error_signal, 'g-', alpha=0.7)
+    plt.title("Synthesis Error Signal")
     plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.legend()
+    plt.ylabel("Error Amplitude")
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
     plt.show()
     
-    # 保存合成结果
+    # ==========================================
+    # 7. 保存合成结果
+    # ==========================================
     # 获取原始文件名（不含扩展名）
     original_name = os.path.splitext(os.path.basename(audio_file))[0]
     output_file = f"{original_name}_after.wav"
