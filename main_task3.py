@@ -23,7 +23,6 @@ def center_clipping_filter(data, clip_ratio=0.3):
     """
     手动实现时域中心削波滤波器
     符合要求：不使用高级函数包
-    来源：课程PPT中的预处理方法
     """
     max_amplitude = np.max(np.abs(data))
     clip_level = clip_ratio * max_amplitude
@@ -42,8 +41,8 @@ def center_clipping_filter(data, clip_ratio=0.3):
 
 def calc_autocorr_manual(frame, k_min, k_max):
     """
-    手动实现自相关计算 - 合规实现
-    使用基本循环和求和，不使用np.correlate
+    手动实现自相关计算
+    使用基本循环和求和
     公式：R(k) = Σ x(n)x(n+k), n=0 to N-k-1
     """
     N = len(frame)
@@ -52,8 +51,6 @@ def calc_autocorr_manual(frame, k_min, k_max):
     # 只计算指定范围的k值
     for idx, k in enumerate(range(k_min, k_max + 1)):
         sum_val = 0.0
-        # 使用向量化求和但避免高级函数
-        # 这是允许的：使用np.sum进行数组求和
         sum_val = np.sum(frame[:N-k] * frame[k:])
         R_values[idx] = sum_val
     

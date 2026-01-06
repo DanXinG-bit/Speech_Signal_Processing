@@ -7,11 +7,11 @@ from tkinter import filedialog
 import time
 
 # ==========================================
-# 第一部分：优化算法库 (使用numpy向量化)
+# 第一部分：使用numpy向量化
 # ==========================================
 
 def load_wav(filename):
-    """读取WAV文件 (向量化版本)"""
+    """读取WAV文件"""
     try:
         with wave.open(filename, 'rb') as wf:
             fs = wf.getparams().framerate
@@ -29,7 +29,7 @@ def load_wav(filename):
         return None, None
 
 def durbin_step_optimized(frame, p=12):
-    """优化版Durbin算法 (使用numpy向量化)"""
+    """Durbin算法 (使用numpy向量化)"""
     N = len(frame)
     if N < p + 1:
         return None
@@ -69,7 +69,7 @@ def durbin_step_optimized(frame, p=12):
     return a[p, 1:p+1]
 
 def ar_to_reflection_optimized(ar_coeffs):
-    """优化版AR到反射系数转换 (向量化)"""
+    """AR到反射系数转换"""
     if ar_coeffs is None or len(ar_coeffs) == 0:
         return None
     
@@ -94,7 +94,7 @@ def ar_to_reflection_optimized(ar_coeffs):
     return k
 
 # ==========================================
-# 第二部分：高效矢量量化 (向量化LBG)
+# 第二部分：矢量量化 (LBG)
 # ==========================================
 
 def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
@@ -159,7 +159,7 @@ def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
     return codebook
 
 # ==========================================
-# 第三部分：高效特征提取
+# 第三部分：特征提取
 # ==========================================
 
 def extract_features_from_file(file_path, p=12, energy_threshold_ratio=0.02):
@@ -218,12 +218,12 @@ def extract_features_from_file(file_path, p=12, energy_threshold_ratio=0.02):
     return features, len(valid_frames)
 
 # ==========================================
-# 第四部分：主程序 (性能优化版)
+# 第四部分：主程序
 # ==========================================
 
 def main():
     print("=" * 70)
-    print("语音信号处理任务五：高效LPC特征提取与矢量量化")
+    print("语音信号处理任务五：LPC特征提取与矢量量化")
     print("=" * 70)
     
     total_start = time.time()
@@ -343,7 +343,7 @@ def main():
         print(f"\n最佳文件: {best_file['name']} ({best_file['features']}特征)")
         print(f"最差文件: {worst_file['name']} ({worst_file['features']}特征)")
     
-    # 9. 可视化 (英文确保可移植性)
+    # 9. 可视化
     print("\n生成可视化结果...")
     plt.figure(figsize=(15, 5))
     
