@@ -226,7 +226,16 @@ def main():
     # 5. 绘图 - 严格按任务要求
     print("\nGenerating results plots...")
     
-    plt.figure(figsize=(12, 8))
+    # 计算关键时间参数，统一横坐标范围
+    total_duration = len(data) / fs  # 音频总时长
+    frame_times = np.arange(len(pitch_periods)) * (frame_shift / fs)  # 帧时间
+    frame_duration = len(pitch_periods) * (frame_shift / fs)  # 分析总时长
+    
+    # 确定横坐标的统一范围
+    x_min = 0
+    x_max = max(total_duration, frame_times[-1] if len(frame_times) > 0 else total_duration)
+    
+    plt.figure(figsize=(12, 10))
     
     # 图表1：原始语音波形（参考图）
     plt.subplot(3, 1, 1)
@@ -235,11 +244,11 @@ def main():
     plt.title(f"Original Speech Waveform - {os.path.basename(audio_file)}")
     plt.ylabel("Amplitude")
     plt.grid(True, alpha=0.3)
-    plt.xlim(0, time_axis[-1])
+    plt.xlim(x_min, x_max)  # 统一横坐标范围
+    plt.xticks(np.arange(0, x_max + 0.1, max(0.1, x_max/10)))  # 统一刻度
     
     # 图表2：每一帧的基音周期（采样点数）- 任务要求
     plt.subplot(3, 1, 2)
-    frame_times = np.arange(len(pitch_periods)) * (frame_shift / fs)
     
     # 绘制浊音帧的基音周期
     voiced_indices = voiced == 1
@@ -256,13 +265,18 @@ def main():
     plt.ylabel("Pitch Period (Samples)")
     plt.xlabel("Time (s)")
     plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper right', fontsize=9)
     
     # 添加基音周期范围参考线
     plt.axhline(y=fs/500, color='g', linestyle='--', alpha=0.5, 
                 linewidth=1, label=f'500Hz ({fs/500:.0f} samples)')
     plt.axhline(y=fs/60, color='b', linestyle='--', alpha=0.5, 
                 linewidth=1, label=f'60Hz ({fs/60:.0f} samples)')
+    
+    # 统一横坐标范围
+    plt.xlim(x_min, x_max)
+    plt.xticks(np.arange(0, x_max + 0.1, max(0.1, x_max/10)))  # 统一刻度
+    
+    # 添加图例（放在右下角）
     plt.legend(loc='upper right', fontsize=8)
     
     # 图表3：清浊音判别结果 - 任务要求
@@ -285,6 +299,10 @@ def main():
     plt.ylim(-0.1, 1.1)
     plt.grid(True, alpha=0.3)
     
+    # 统一横坐标范围
+    plt.xlim(x_min, x_max)
+    plt.xticks(np.arange(0, x_max + 0.1, max(0.1, x_max/10)))  # 统一刻度
+    
     # 添加浊音比例标注
     voiced_percent = np.sum(voiced) / len(voiced) * 100
     plt.text(0.02, 0.95, f'Voiced Frames: {voiced_percent:.1f}%',
@@ -292,6 +310,7 @@ def main():
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
              fontsize=9)
     
+    # 确保子图之间紧密排列，消除空白
     plt.tight_layout()
     
     print("\n" + "=" * 70)
