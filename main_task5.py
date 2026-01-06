@@ -303,7 +303,7 @@ def main():
     print("开始LBG矢量量化训练...")
     lbg_start = time.time()
     
-    codebook = lbg_train_vectorized(features_matrix, cb_size=16)
+    codebook = lbg_train_vectorized(features_matrix, cb_size=128)
     
     if len(codebook) == 0:
         print("LBG训练失败")

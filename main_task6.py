@@ -24,7 +24,7 @@ def apply_hamming_window(frame):
     return frame * hamming
 
 def manual_correlation(x):
-    """手动实现自相关计算（不使用np.correlate）"""
+    """手动实现自相关计算"""
     N = len(x)
     R = np.zeros(N)
     for k in range(N):
@@ -43,7 +43,7 @@ def center_clipping(frame, clipping_level=0.65):
     threshold = clipping_level * max_amp
     
     clipped = frame.copy()
-    # 手动实现削波（不使用np.clip）
+    # 手动实现削波
     for i in range(len(clipped)):
         if clipped[i] > threshold:
             clipped[i] = clipped[i] - threshold
@@ -108,7 +108,6 @@ def pitch_detection(frame, fs):
 def durbin_algorithm(R, p):
     """
     手动实现Levinson-Durbin递推算法
-    不使用np.clip，手动截断反射系数
     """
     E = np.zeros(p + 1)
     a = np.zeros((p + 1, p + 1))
@@ -124,7 +123,7 @@ def durbin_algorithm(R, p):
         
         ki = (R[i] - sum_val) / (E[i-1] + 1e-12)
         
-        # 手动截断反射系数，不使用np.clip
+        # 手动截断反射系数
         if ki > 0.999:
             ki = 0.999
         elif ki < -0.999:
@@ -143,8 +142,7 @@ def durbin_algorithm(R, p):
 
 def ar_to_reflection_manual(ar_coeffs):
     """
-    AR系数递推求反射系数（自研实现）
-    不使用np.clip
+    AR系数递推求反射系数
     """
     p = len(ar_coeffs)
     a = np.zeros((p + 1, p + 1))
@@ -172,7 +170,6 @@ def ar_to_reflection_manual(ar_coeffs):
 class LatticeSynthesizer:
     """
     带记忆的格型合成滤波器
-    解决帧间相位不连续问题
     """
     def __init__(self, p=12):
         self.p = p
@@ -404,7 +401,7 @@ def main():
     
     # 1. 原始vs合成语音对比
     time_axis = np.arange(len(data)) / fs
-    plt.subplot(3, 2, 1)
+    plt.subplot(1, 1, 1)
     plt.plot(time_axis, data, 'b', alpha=0.7, label="Original")
     plt.plot(time_axis, synthesized_signal, 'r', alpha=0.7, label="Synthesized")
     plt.title("Original vs Synthesized Speech")
@@ -412,71 +409,7 @@ def main():
     plt.ylabel("Amplitude")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    
-    # 2. 基音周期轨迹
-    plt.subplot(3, 2, 2)
-    if pitch_periods:
-        frame_indices = np.arange(len(pitch_periods))
-        plt.plot(frame_indices, pitch_periods, 'g-', linewidth=1.5)
-        plt.title("Pitch Period Trajectory")
-        plt.xlabel("Frame Index")
-        plt.ylabel("Pitch Period (samples)")
-        plt.grid(True, alpha=0.3)
-    
-    # 3. 自相关峰值
-    plt.subplot(3, 2, 3)
-    if correlation_peaks:
-        frame_indices = np.arange(len(correlation_peaks))
-        plt.plot(frame_indices, correlation_peaks, 'm-', linewidth=1.5)
-        plt.axhline(y=0.3, color='r', linestyle='--', alpha=0.5, label='V/U Threshold')
-        plt.title("Normalized Autocorrelation Peaks")
-        plt.xlabel("Frame Index")
-        plt.ylabel("Peak Value")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-    
-    # 4. 频谱对比（选择中间帧）
-    plt.subplot(3, 2, 4)
-    if len(data) > frame_len:
-        mid_idx = len(data) // 2
-        orig_frame = data[mid_idx:mid_idx+frame_len]
-        synth_frame = synthesized_signal[mid_idx:mid_idx+frame_len]
-        
-        # 计算频谱
-        orig_spectrum = np.abs(np.fft.fft(orig_frame * np.hanning(frame_len)))
-        synth_spectrum = np.abs(np.fft.fft(synth_frame * np.hanning(frame_len)))
-        freq_axis = np.fft.fftfreq(frame_len, 1/fs)[:frame_len//2]
-        
-        plt.semilogy(freq_axis, orig_spectrum[:len(freq_axis)], 
-                    'b-', label="Original", alpha=0.7)
-        plt.semilogy(freq_axis, synth_spectrum[:len(freq_axis)], 
-                    'r-', label="Synthesized", alpha=0.7)
-        plt.title("Spectrum Comparison (Mid Frame)")
-        plt.xlabel("Frequency (Hz)")
-        plt.ylabel("Magnitude")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-    
-    # 5. 激励类型分布
-    plt.subplot(3, 2, 5)
-    labels = ['Voiced', 'Unvoiced/Silent']
-    sizes = [voiced_count, num_frames - voiced_count]
-    colors = ['lightcoral', 'lightskyblue']
-    plt.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-    plt.title("Excitation Type Distribution")
-    plt.axis('equal')
-    
-    # 6. 误差分析
-    plt.subplot(3, 2, 6)
-    # 计算逐点误差
-    error_signal = data - synthesized_signal[:len(data)]
-    plt.plot(time_axis, error_signal, 'g-', alpha=0.7)
-    plt.title("Synthesis Error Signal")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Error Amplitude")
-    plt.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
+
     plt.show()
     
     # ==========================================
