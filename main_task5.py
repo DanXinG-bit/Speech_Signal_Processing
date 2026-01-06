@@ -227,19 +227,13 @@ def main():
     print("=" * 70)
     
     total_start = time.time()
-    
-    # 1. 获取数据目录
-    default_dir = "d:/speechdata/"
-    if os.path.exists(default_dir):
-        data_dir = default_dir
-    else:
-        print(f"默认路径不存在: {default_dir}")
-        root = tk.Tk()
-        root.withdraw()
-        data_dir = filedialog.askdirectory(title="选择语音数据集文件夹")
-        if not data_dir:
-            print("程序退出")
-            return
+
+    root = tk.Tk()
+    root.withdraw()
+    data_dir = filedialog.askdirectory(title="选择语音数据集文件夹")
+    if not data_dir:
+        print("程序退出")
+        return
     
     print(f"数据目录: {data_dir}")
     
