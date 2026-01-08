@@ -43,13 +43,13 @@ def durbin_algorithm(R, p, stability_threshold=0.999):
     """
     手动实现Levinson-Durbin递推算法
     输入: R (自相关序列, 0~p阶)
-    输出: a (AR系数数组, 1~p阶)
+    输出: a (AR系数数组, 1~p阶), E (误差能量数组, 0~p阶)
     """
     E = np.zeros(p + 1)
     a = np.zeros((p + 1, p + 1))
     
     # 初始化
-    E = R.copy()
+    E[0] = R[0]  # E(0) = R(0)
     
     # 递推开始
     for i in range(1, p + 1):
@@ -76,8 +76,8 @@ def durbin_algorithm(R, p, stability_threshold=0.999):
         # 更新残差能量E_i
         E[i] = (1 - k_i**2) * E[i-1]
         
-    # 返回最终阶数p的系数(a1, a2, ..., ap)
-    return a[p][1:]
+    # 返回最终阶数p的系数(a1, a2, ..., ap)和误差能量数组
+    return a[p][1:], E
 
 # ==========================================
 # 第二部分：任务主逻辑
@@ -138,22 +138,31 @@ def main():
     print(f"  Voiced energy: {energies[idx_v]:.6f}")
     print(f"  Unvoiced energy: {energies[idx_u]:.6f}")
 
-    # 3. 计算AR系数
-    print("\nCalculating AR coefficients...")
+    # 3. 计算AR系数和误差曲线
+    print("\nCalculating AR coefficients and error curves...")
     
     R_v = calc_autocorr_p(voiced_frame, p)
-    ar_v = durbin_algorithm(R_v, p)
+    ar_v, E_v = durbin_algorithm(R_v, p)  # 现在返回两个值：系数和误差
     
     R_u = calc_autocorr_p(unvoiced_frame, p)
-    ar_u = durbin_algorithm(R_u, p)
+    ar_u, E_u = durbin_algorithm(R_u, p)  # 现在返回两个值：系数和误差
     
-    print("AR coefficients calculated successfully.")
+    print("AR coefficients and error curves calculated successfully.")
     
-    # 4. 绘图展示（只显示时域图和AR系数图）
-    plt.figure(figsize=(12, 8))
+    # 打印误差曲线分析信息
+    print("\nError Curve Analysis:")
+    print(f"Voiced - Initial error E(0): {E_v[0]:.6f}")
+    print(f"Voiced - Final error E({p}): {E_v[p]:.6f}")
+    print(f"Voiced - Error reduction: {100*(1-E_v[p]/E_v[0]):.1f}%")
+    print(f"Unvoiced - Initial error E(0): {E_u[0]:.6f}")
+    print(f"Unvoiced - Final error E({p}): {E_u[p]:.6f}")
+    print(f"Unvoiced - Error reduction: {100*(1-E_u[p]/E_u[0]):.1f}%")
     
-    #时域波形
-    plt.subplot(2, 2, 1)
+    # 4. 绘图展示（显示时域图、AR系数图和误差曲线）
+    plt.figure(figsize=(15, 12))
+    
+    # 时域波形
+    plt.subplot(3, 2, 1)
     plt.plot(voiced_frame, 'b-', linewidth=1.5)
     plt.title("Voiced Frame (Time Domain)", fontsize=12, fontweight='bold')
     plt.xlabel("Sample")
@@ -161,7 +170,7 @@ def main():
     plt.grid(True, alpha=0.3)
     plt.xlim(0, len(voiced_frame))
     
-    plt.subplot(2, 2, 2)
+    plt.subplot(3, 2, 2)
     plt.plot(unvoiced_frame, 'r-', linewidth=1.5)
     plt.title("Unvoiced Frame (Time Domain)", fontsize=12, fontweight='bold')
     plt.xlabel("Sample")
@@ -169,8 +178,8 @@ def main():
     plt.grid(True, alpha=0.3)
     plt.xlim(0, len(unvoiced_frame))
     
-    #AR系数
-    plt.subplot(2, 2, 3)
+    # AR系数
+    plt.subplot(3, 2, 3)
     markerline, stemlines, baseline = plt.stem(
         range(1, p+1), ar_v, 
         linefmt='b-', markerfmt='bo', basefmt='k-'
@@ -182,7 +191,7 @@ def main():
     plt.ylabel("Value (ai)")
     plt.grid(True, alpha=0.3)
     
-    plt.subplot(2, 2, 4)
+    plt.subplot(3, 2, 4)
     markerline, stemlines, baseline = plt.stem(
         range(1, p+1), ar_u, 
         linefmt='r-', markerfmt='ro', basefmt='k-'
@@ -194,10 +203,80 @@ def main():
     plt.ylabel("Value (ai)")
     plt.grid(True, alpha=0.3)
     
-    plt.suptitle(f"AR Analysis: {os.path.basename(audio_file)}", 
+    # 新增：误差曲线
+    plt.subplot(3, 2, 5)
+    # 绘制归一化误差：E(i)/E(0)
+    plt.plot(range(p + 1), E_v / E_v[0], 'b-o', linewidth=2, markersize=6, label='Voiced Error')
+    plt.plot(range(p + 1), E_u / E_u[0], 'r-s', linewidth=2, markersize=6, label='Unvoiced Error')
+    plt.title("Normalized Prediction Error vs. Order", fontsize=12, fontweight='bold')
+    plt.xlabel("Order (i)")
+    plt.ylabel("Normalized Error E(i)/R(0)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.ylim(0, 1.1)  # 设置y轴范围，便于观察
+    
+    # 新增：误差下降曲线（对数坐标）
+    plt.subplot(3, 2, 6)
+    plt.plot(range(p + 1), 10 * np.log10(E_v / E_v[0]), 'b-o', linewidth=2, markersize=6, label='Voiced Error (dB)')
+    plt.plot(range(p + 1), 10 * np.log10(E_u / E_u[0]), 'r-s', linewidth=2, markersize=6, label='Unvoiced Error (dB)')
+    plt.title("Error Reduction in dB Scale", fontsize=12, fontweight='bold')
+    plt.xlabel("Order (i)")
+    plt.ylabel("Error Reduction (dB)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    # 添加关键点标注（转折点）
+    # 找出误差下降趋于平缓的点（通常在第8阶左右）
+    for i in range(4, p):
+        if i >= 8:
+            # 在转折点添加标记
+            plt.annotate(f'i={i}', xy=(i, 10*np.log10(E_v[i]/E_v[0])), 
+                        xytext=(i+1, 10*np.log10(E_v[i]/E_v[0])-2),
+                        arrowprops=dict(arrowstyle='->', color='blue', alpha=0.6),
+                        fontsize=9, color='blue')
+            plt.annotate(f'i={i}', xy=(i, 10*np.log10(E_u[i]/E_u[0])), 
+                        xytext=(i+1, 10*np.log10(E_u[i]/E_u[0])+2),
+                        arrowprops=dict(arrowstyle='->', color='red', alpha=0.6),
+                        fontsize=9, color='red')
+            break
+    
+    plt.suptitle(f"AR Analysis with Error Curves: {os.path.basename(audio_file)}", 
                  fontsize=14, fontweight='bold', y=0.98)
     plt.tight_layout()
     plt.show()
+    
+    # 5. 额外分析：误差下降率
+    print("\nDetailed Error Analysis:")
+    print("Order  Voiced_Norm  Unvoiced_Norm  Voiced_dB  Unvoiced_dB")
+    print("----------------------------------------------------------")
+    for i in range(0, p+1):
+        if i % 2 == 0 or i <= 5:  # 显示关键阶数的数据
+            voiced_norm = E_v[i] / E_v[0]
+            unvoiced_norm = E_u[i] / E_u[0]
+            voiced_db = 10 * np.log10(voiced_norm + 1e-10)
+            unvoiced_db = 10 * np.log10(unvoiced_norm + 1e-10)
+            print(f"{i:3d}    {voiced_norm:.6f}     {unvoiced_norm:.6f}      {voiced_db:7.2f} dB  {unvoiced_db:7.2f} dB")
+    
+    # 分析最优阶数建议
+    print("\nOptimal Order Analysis (based on error reduction):")
+    # 找出误差下降趋于平缓的点（当连续3阶误差下降小于0.5dB时）
+    for i in range(2, p-2):
+        if (10*np.log10(E_v[i]/E_v[i-1]) > -0.5 and 
+            10*np.log10(E_v[i+1]/E_v[i]) > -0.5 and
+            10*np.log10(E_v[i+2]/E_v[i+1]) > -0.5):
+            print(f"  Voiced: Optimal order around i={i} (error reduction slows down)")
+            break
+    else:
+        print(f"  Voiced: Could use higher order than p={p}")
+    
+    for i in range(2, p-2):
+        if (10*np.log10(E_u[i]/E_u[i-1]) > -0.5 and 
+            10*np.log10(E_u[i+1]/E_u[i]) > -0.5 and
+            10*np.log10(E_u[i+2]/E_u[i+1]) > -0.5):
+            print(f"  Unvoiced: Optimal order around i={i} (error reduction slows down)")
+            break
+    else:
+        print(f"  Unvoiced: Could use higher order than p={p}")
 
 if __name__ == "__main__":
     main()

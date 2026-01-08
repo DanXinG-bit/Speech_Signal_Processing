@@ -61,7 +61,7 @@ def calc_autocorr_manual(frame, k_min, k_max):
 # ==========================================
 
 def pitch_detection_compliant(data, fs):
-    """合规版基音检测算法"""
+    """基音检测算法"""
     print("Preprocessing (center clipping)...")
     start_time = time.time()
     
