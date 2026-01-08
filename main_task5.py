@@ -29,7 +29,7 @@ def load_wav(filename):
         return None, None
 
 def durbin_step_optimized(frame, p=12):
-    """Durbin算法 (使用numpy向量化)"""
+    """Durbin算法"""
     N = len(frame)
     if N < p + 1:
         return None
@@ -98,7 +98,7 @@ def ar_to_reflection_optimized(ar_coeffs):
 # ==========================================
 
 def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
-    """向量化LBG算法 (性能优化版)"""
+    """向量化LBG算法"""
     if len(features) == 0:
         return np.array([])
     
@@ -252,7 +252,8 @@ def main():
     
     # 3. 设置处理参数
     p = 12
-    max_files = min(100, len(wav_files))  # 最多处理30个文件
+    max_files = min(100, len(wav_files))
+    # 最多处理N个文件
     all_features = []
     file_stats = []
     

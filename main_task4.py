@@ -152,7 +152,7 @@ def main():
     # 4. 绘图展示（只显示时域图和AR系数图）
     plt.figure(figsize=(12, 8))
     
-    # 第一行：时域波形
+    #时域波形
     plt.subplot(2, 2, 1)
     plt.plot(voiced_frame, 'b-', linewidth=1.5)
     plt.title("Voiced Frame (Time Domain)", fontsize=12, fontweight='bold')
@@ -169,7 +169,7 @@ def main():
     plt.grid(True, alpha=0.3)
     plt.xlim(0, len(unvoiced_frame))
     
-    # 第二行：AR系数
+    #AR系数
     plt.subplot(2, 2, 3)
     markerline, stemlines, baseline = plt.stem(
         range(1, p+1), ar_v, 
