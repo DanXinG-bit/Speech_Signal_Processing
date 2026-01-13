@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import time
 
 # ==========================================
@@ -94,19 +94,26 @@ def ar_to_reflection_optimized(ar_coeffs):
     return k
 
 # ==========================================
-# 第二部分：矢量量化 (LBG)
+# 第二部分：矢量量化 (LBG) - 修改以记录误差曲线和码字分配
 # ==========================================
 
-def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
-    """向量化LBG算法"""
+def lbg_train_with_stats(features, cb_size=128, max_iterations=10):
+    """向量化LBG算法，记录归一化误差曲线和每个码字分配的矢量数量"""
     if len(features) == 0:
-        return np.array([])
+        return np.array([]), [], np.array([])
     
     n_samples, n_dims = features.shape
     print(f"  LBG训练: {n_samples}个样本, {n_dims}维, 目标码本: {cb_size}")
     
     # 1. 初始码本：全局均值
     codebook = np.mean(features, axis=0, keepdims=True)
+    
+    # 记录归一化误差曲线
+    distortion_history = []
+    
+    # 计算初始畸变
+    initial_dist = np.mean(np.sum((features - codebook)**2, axis=1))
+    distortion_history.append(initial_dist)
     
     # 2. 分裂训练
     while codebook.shape[0] < cb_size:
@@ -122,7 +129,6 @@ def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
         # 3. 迭代优化
         for iteration in range(max_iterations):
             # 向量化计算所有距离 (广播机制)
-            # (x - c)^2 = x^2 + c^2 - 2*x·c
             x_sq = np.sum(features ** 2, axis=1, keepdims=True)  # (n_samples, 1)
             c_sq = np.sum(codebook ** 2, axis=1)  # (current_size,)
             x_dot_c = np.dot(features, codebook.T)  # (n_samples, current_size)
@@ -132,6 +138,10 @@ def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
             
             # 分配最近码字
             nearest_idx = np.argmin(distances, axis=1)
+            
+            # 计算当前平均畸变
+            current_dist = np.mean(np.min(distances, axis=1))
+            distortion_history.append(current_dist)
             
             # 更新码本
             new_codebook = np.zeros_like(codebook)
@@ -156,7 +166,20 @@ def lbg_train_vectorized(features, cb_size=16, max_iterations=10):
         
         print(f"    码本大小: {current_size}, 非空胞腔: {np.sum(counts > 0)}")
     
-    return codebook
+    # 计算最终分配
+    x_sq = np.sum(features ** 2, axis=1, keepdims=True)
+    c_sq = np.sum(codebook ** 2, axis=1)
+    x_dot_c = np.dot(features, codebook.T)
+    distances = x_sq + c_sq - 2 * x_dot_c
+    nearest_idx = np.argmin(distances, axis=1)
+    
+    # 统计每个码字分配的矢量数量
+    final_counts = np.bincount(nearest_idx, minlength=len(codebook))
+    
+    # 计算归一化误差曲线
+    norm_error_curve = np.array(distortion_history) / initial_dist
+    
+    return codebook, norm_error_curve, final_counts
 
 # ==========================================
 # 第三部分：特征提取
@@ -304,7 +327,8 @@ def main():
     print("开始LBG矢量量化训练...")
     lbg_start = time.time()
     
-    codebook = lbg_train_vectorized(features_matrix, cb_size=128)
+    # 修改：调用新的函数获取误差曲线和分配统计
+    codebook, error_curve, code_counts = lbg_train_with_stats(features_matrix, cb_size=128)
     
     if len(codebook) == 0:
         print("LBG训练失败")
@@ -313,15 +337,22 @@ def main():
     lbg_time = time.time() - lbg_start
     print(f"LBG训练完成! 耗时: {lbg_time:.2f}秒")
     print(f"码本大小: {codebook.shape[0]}x{codebook.shape[1]}")
+    print(f"总迭代步数: {len(error_curve)}")
     
-    # 7. 保存结果
+    # 7. 保存结果（在显示图表之前）
     try:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         output_file = f"codebook_{timestamp}.npy"
+        output_path = os.path.join(os.getcwd(), output_file)
         np.save(output_file, codebook)
+        file_size = os.path.getsize(output_path)
+        file_size_mb = file_size / (1024 * 1024)
         print(f"码本已保存: {output_file}")
+        print(f"文件大小: {file_size:,} bytes ({file_size_mb:.2f} MB)")
     except Exception as e:
         print(f"保存失败: {e}")
+        output_file = None
+        output_path = None
     
     # 8. 统计信息
     total_time = time.time() - total_start
@@ -338,59 +369,138 @@ def main():
         print(f"\n最佳文件: {best_file['name']} ({best_file['features']}特征)")
         print(f"最差文件: {worst_file['name']} ({worst_file['features']}特征)")
     
-    # 9. 可视化
+    # 打印码字分配的详细统计
+    print("\n码字分配详细统计:")
+    print("-" * 40)
+    print(f"空码字数: {np.sum(code_counts == 0)}")
+    print(f"分配1-10个矢量的码字数: {np.sum((code_counts >= 1) & (code_counts <= 10))}")
+    print(f"分配11-100个矢量的码字数: {np.sum((code_counts >= 11) & (code_counts <= 100))}")
+    print(f"分配100+个矢量的码字数: {np.sum(code_counts > 100)}")
+    
+    # 显示前10个最常用的码字
+    print("\n前10个最常用的码字:")
+    print("Index | Vector Count")
+    print("-" * 25)
+    for i, idx in enumerate(np.argsort(code_counts)[::-1][:10]):
+        print(f"{idx:5d} | {code_counts[idx]:12d}")
+    
+    # 显示弹窗提示（在显示图表之前）
+    if output_file:
+        abs_path = os.path.abspath(output_path)
+        messagebox.showinfo(
+            "处理完成",
+            f"任务五：LPC特征提取与矢量量化已完成！\n\n"
+            f"✓ 特征提取: {len(features_matrix):,}个特征\n"
+            f"✓ 码本训练: {codebook.shape[0]}x{codebook.shape[1]}\n"
+            f"✓ 训练时间: {lbg_time:.1f}秒\n\n"
+            f"生成文件: {output_file}\n"
+            f"保存位置: {abs_path}\n\n也就是代码所在的目录\n"
+            f"请点击确认来查看后续分析图表"
+        )
+    
+    # 9. 可视化 - 根据要求修改为三个图
     print("\n生成可视化结果...")
+    
+    # 创建三个子图
     plt.figure(figsize=(15, 5))
     
-    # 图1: 特征分布
+    # 图1: 归一化误差曲线
     plt.subplot(1, 3, 1)
-    plt.scatter(features_matrix[:, 0], features_matrix[:, 1], 
-                s=1, alpha=0.1, c='blue', label='Features')
-    plt.scatter(codebook[:, 0], codebook[:, 1],
-                s=100, marker='X', c='red', edgecolors='black', 
-                linewidth=1.5, label='Codebook')
-    plt.xlabel('Reflection Coefficient K1')
-    plt.ylabel('Reflection Coefficient K2')
-    plt.title('Feature Distribution (K1 vs K2)')
+    plt.plot(error_curve, 'b-', linewidth=2)
+    plt.xlabel('Iteration Step')
+    plt.ylabel('Normalized Distortion D(n)/D(0)')
+    plt.title('Normalized Quantization Error Curve')
     plt.grid(True, alpha=0.3)
-    plt.legend()
     
-    # 图2: 码本热力图
+    # 标记关键点
+    if len(error_curve) > 20:
+        # 找出误差下降显著变缓的点（通常在前10-20步）
+        for i in range(10, len(error_curve)-5):
+            if (error_curve[i+1] - error_curve[i]) / error_curve[i] > -0.001:
+                plt.axvline(x=i, color='r', linestyle='--', alpha=0.5, 
+                           label=f'Slowing at step {i}')
+                plt.text(i, error_curve[i]*0.9, f'Step {i}', 
+                        rotation=90, fontsize=9)
+                break
+    
+    # 添加统计信息
+    final_error = error_curve[-1]
+    initial_error = error_curve[0]
+    reduction_rate = (1 - final_error) * 100
+    plt.text(0.05, 0.95, f'Final D/D(0): {final_error:.3f}', 
+             transform=plt.gca().transAxes, fontsize=10, 
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+    plt.text(0.05, 0.88, f'Reduction: {reduction_rate:.1f}%', 
+             transform=plt.gca().transAxes, fontsize=10,
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+    
+    # 图2: 每个码字包含的矢量数量统计（条形图）
     plt.subplot(1, 3, 2)
+    
+    # 按数量排序，便于观察分布
+    sorted_indices = np.argsort(code_counts)[::-1]
+    sorted_counts = code_counts[sorted_indices]
+    
+    bars = plt.bar(range(len(sorted_counts)), sorted_counts, 
+                   color='steelblue', edgecolor='black')
+    
+    # 添加数值标签在前10个柱子上
+    for i, count in enumerate(sorted_counts[:10]):
+        plt.text(i, count + 5, str(int(count)), 
+                ha='center', va='bottom', fontsize=8)
+    
+    plt.xlabel('Codebook Index (Sorted)')
+    plt.ylabel('Number of Vectors Assigned')
+    plt.title(f'Vector Count per Codebook Entry\n(Total Vectors: {np.sum(code_counts):,})')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # 添加统计信息
+    max_count = np.max(code_counts)
+    min_count = np.min(code_counts)
+    avg_count = np.mean(code_counts)
+    std_count = np.std(code_counts)
+    
+    stats_text = (f'Max: {max_count}\n'
+                  f'Min: {min_count}\n'
+                  f'Mean: {avg_count:.1f}\n'
+                  f'Std: {std_count:.1f}')
+    
+    plt.text(0.65, 0.95, stats_text, transform=plt.gca().transAxes, 
+             fontsize=9, bbox=dict(boxstyle="round,pad=0.3", 
+                                  facecolor="white", alpha=0.8))
+    
+    # 图3: 码本矩阵热力图（保留核心表征）
+    plt.subplot(1, 3, 3)
     im = plt.imshow(codebook.T, aspect='auto', cmap='viridis', 
                     interpolation='nearest')
-    plt.colorbar(im, label='Coefficient Value')
-    plt.xlabel('Codebook Index (0-15)')
-    plt.ylabel('Coefficient Order (1-12)')
-    plt.title('Codebook Matrix')
-    plt.xticks(range(16))
-    plt.yticks(range(12))
+    plt.colorbar(im, orientation='vertical', pad=0.02, label='Coefficient Value')
+    plt.xlabel('Codebook Index (0-127)')
+    plt.ylabel('Reflection Coefficient Order (1-12)')
+    plt.title('Codebook Matrix (128x12)')
     
-    # 图3: 反射系数统计
-    plt.subplot(1, 3, 3)
-    mean_coeffs = np.mean(features_matrix, axis=0)
-    std_coeffs = np.std(features_matrix, axis=0)
+    # 设置刻度
+    plt.xticks(range(0, 128, 16), [str(i) for i in range(0, 128, 16)])
+    plt.yticks(range(12), range(1, 13))
     
-    x_pos = np.arange(1, p + 1)
-    plt.errorbar(x_pos, mean_coeffs, yerr=std_coeffs, 
-                 fmt='o-', capsize=5, linewidth=2, markersize=6,
-                 label='Mean ± Std')
-    plt.xlabel('Coefficient Order')
-    plt.ylabel('Coefficient Value')
-    plt.title('Reflection Coefficients Statistics')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.xticks(x_pos)
-    
-    plt.suptitle(f'LPC-VQ Analysis (Total Features: {len(features_matrix):,})', 
+    plt.suptitle(f'LPC-VQ Analysis Results (Total Features: {len(features_matrix):,})', 
                  fontsize=14, fontweight='bold')
     plt.tight_layout()
     
     print("\n" + "=" * 70)
-    print("任务完成! 请查看可视化结果...")
+    print("正在显示分析图表...")
     print("=" * 70)
     
+    # 显示图表
     plt.show()
+    
+    # 程序结束提示
+    print("\n" + "=" * 70)
+    print("任务五执行完毕！")
+    if output_file:
+        print(f"码本文件: {output_file}")
+        print(f"保存位置: {os.path.abspath(output_path)}")
+        print(f"工作目录: {os.getcwd()}")
+    print("=" * 70)
 
 if __name__ == "__main__":
     main()
