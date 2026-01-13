@@ -512,7 +512,7 @@ def main():
             f"保存位置: {abs_path}\n\n也就是在代码的目录文件\n\n"
             f"总帧数: {num_frames}\n"
             f"浊音帧: {voiced_count} ({voiced_count/max(1,num_frames)*100:.1f}%)\n\n"
-            f"请点击确认来查看对比图表"
+            f"请点击确定来查看对比图表"
         )
     
     print("\n" + "=" * 70)
