@@ -394,8 +394,8 @@ def main():
             f"✓ 码本训练: {codebook.shape[0]}x{codebook.shape[1]}\n"
             f"✓ 训练时间: {lbg_time:.1f}秒\n\n"
             f"生成文件: {output_file}\n"
-            f"保存位置: {abs_path}\n\n也就是代码所在的目录\n"
-            f"请点击确认来查看后续分析图表"
+            f"保存位置: {abs_path}\n\n也就是代码所在的目录\n\n"
+            f"请点击确定来查看后续分析图表"
         )
     
     # 9. 可视化 - 根据要求修改为三个图
